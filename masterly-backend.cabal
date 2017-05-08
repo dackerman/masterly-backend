@@ -1,0 +1,70 @@
+name:                masterly-backend
+version:             0.1.0.0
+-- synopsis:
+-- description:
+homepage:            https://github.com/githubuser/masterly-backend#readme
+license:             BSD3
+license-file:        LICENSE
+author:              Author name here
+maintainer:          example@example.com
+copyright:           2017 Author name here
+category:            Web
+build-type:          Simple
+extra-source-files:  README.md
+cabal-version:       >=1.10
+
+library
+  hs-source-dirs:      src
+  exposed-modules:     Lib
+  build-depends:       base >= 4.7 && < 5
+  default-language:    Haskell2010
+
+executable masterly-backend-exe
+  hs-source-dirs:      app
+  main-is:             Main.hs
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N -W
+  build-depends:       base
+                     , text
+                     , bytestring
+                     , aeson
+                     , containers
+                     , unordered-containers
+                     , wreq
+                     , lens
+                     , scotty
+                     , optparse-applicative
+                     , wai-middleware-static
+                     , wai-extra
+                     , http-client
+                     , http-types
+                     , mtl
+                     , pipes
+                     , directory
+                     , masterly-backend
+  default-language:    Haskell2010
+  other-modules:     Integration
+                     Integrations.Gmail
+                     Integrations.Gmail.Core
+                     Integrations.Gmail.Http
+                     Integrations.Gmail.JSON.GmailTokenInfo
+                     Integrations.Gmail.JSON.ListMessagesResponse
+                     Integrations.Gmail.JSON.Message
+                     Integrations.Gmail.JSON.MessageRef
+                     Integrations.Gmail.JSON.RefreshResponse
+                     Integrations.Gmail.Process
+                     Integrations.Secrets
+                     Webserver
+
+
+test-suite masterly-backend-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Spec.hs
+  build-depends:       base
+                     , masterly-backend
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  default-language:    Haskell2010
+
+source-repository head
+  type:     git
+  location: https://github.com/githubuser/masterly-backend
