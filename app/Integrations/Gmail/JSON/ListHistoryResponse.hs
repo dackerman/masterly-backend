@@ -23,7 +23,7 @@ data HistoryItem = HistoryItem
   } deriving (Show)
 
 data ListMessagesResponse = ListMessagesResponse
-  { _history :: [HistoryItem]
+  { _history :: Maybe [HistoryItem]
   , _nextPageToken :: Maybe Text
   , _historyId :: Text
   } deriving (Show)
@@ -31,4 +31,3 @@ data ListMessagesResponse = ListMessagesResponse
 $(deriveJSON defaultOptions{fieldLabelModifier = drop 1} ''MessageWithLabels)
 $(deriveJSON defaultOptions{fieldLabelModifier = drop 1} ''HistoryItem)
 $(deriveJSON defaultOptions{fieldLabelModifier = drop 1} ''ListMessagesResponse)
-

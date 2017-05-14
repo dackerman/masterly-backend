@@ -19,7 +19,6 @@ import           Integration
 import           Integrations.Gmail.Core
 import           Integrations.Gmail.Http
 import           Integrations.Gmail.Process
-
 import           Prelude hiding (putStrLn, lookup)
 
 gmailIntegration :: Integration

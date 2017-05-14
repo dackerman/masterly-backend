@@ -10,11 +10,22 @@ import Integrations.Gmail.JSON.GmailTokenInfo (GmailTokenInfo)
 emptyGmailState :: GmailState
 emptyGmailState = MkGmail Nothing Nothing
 
-data GmailState = MkGmail
-  { token :: Maybe GmailTokenInfo
+toTGmailState :: GmailState -> Maybe TGmailState
+toTGmailState orig = case token orig of
+  Just tok -> Just $ MkGmail tok (lastMessageID orig)
+  Nothing -> Nothing
+
+data GmailStateG a = MkGmail
+  { token :: a
   , lastMessageID :: Maybe Text
   }
   deriving (Show, Generic)
 
-instance FromJSON GmailState
-instance ToJSON GmailState
+type GmailState = GmailStateG (Maybe GmailTokenInfo)
+type TGmailState = GmailStateG GmailTokenInfo
+
+instance FromJSON a => FromJSON (GmailStateG a)
+instance ToJSON a => ToJSON (GmailStateG a)
+
+class HasMessageRef a where
+  getRef :: a -> Text

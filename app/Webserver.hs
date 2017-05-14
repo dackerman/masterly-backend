@@ -10,9 +10,7 @@ import qualified Data.ByteString.Lazy as BL
 import           Data.Map (Map, fromList, lookup)
 import           Data.Semigroup ((<>))
 import           Data.Text (Text, pack, unpack)
-import           Data.Text.Lazy (fromStrict, toStrict)
-import           Network.HTTP.Types.Status (unauthorized401)
-import           Network.Wai.Middleware.Static (staticPolicy, noDots, addBase, (>->))
+import           Data.Text.Lazy (fromStrict)
 import qualified Options.Applicative as O
 import           Web.Scotty hiding (header)
 
@@ -38,7 +36,6 @@ main = do
   -- opts <- execParser programOpts
   syncIntegrations
   app
-
 
 integrations :: Map Text Integration
 integrations = fromList $ (\i -> (integrationId i, i)) <$> ints
@@ -67,18 +64,18 @@ handleIntegration = do
       commands <- liftAndCatchIO $ (setupIntegration integration) bytes allParams
       executeIntegrationCommands integrationName commands
     Nothing -> redirect "/"
-  
+
 
 executeIntegrationCommands :: Text -> [IntegrationCommand] -> ActionM ()
 executeIntegrationCommands _ [] = text "ok"
-executeIntegrationCommands integrationName (Redirect pathFn : cs) =
+executeIntegrationCommands integrationName (Redirect pathFn : _) =
   redirect $ fromStrict $ pathFn (baseUrl <> "/api/integrations/" <> integrationName)
 executeIntegrationCommands integrationName (StoreState bytes : cs) = do
   liftAndCatchIO $ storeIntegrationState integrationName bytes
   executeIntegrationCommands integrationName cs
 
 executeTaskCommand :: Integration -> TaskCommand -> IO ()
-executeTaskCommand integration ur@(UpdateRecord ident doc fields) = do
+executeTaskCommand _ (UpdateRecord ident doc fields) = do
   putStrLn $ "Updating record " <> show ident
   storeRecord ident doc fields
   return ()
@@ -89,10 +86,13 @@ executeTaskCommand integration (UpdateState bytes) = do
 
 syncIntegrations :: IO ()
 syncIntegrations = void $ traverse startSyncing integrations
-  where startSyncing integration = every (seconds 30) (void $ syncIntegration integration)
+  where startSyncing integration = every (hours 3) (void $ syncIntegration integration)
 
 seconds :: Int -> Int
 seconds s = s * 1000000
+
+minutes m = 60 * seconds m
+hours h = 60 * minutes h
 
 every :: Int -> IO a -> IO ()
 every timeUnit action = do
@@ -120,7 +120,7 @@ storeIntegrationState integrationName bytes =
   BL.writeFile (integrationFile integrationName) bytes
 
 storeRecord :: Identifier -> Document -> Fields -> IO ()
-storeRecord ident doc fields = return ()
+storeRecord _ _ _ = return ()
   --BL.writeFile (recordFile ident) serializedRecord
   --where serializedRecord = 0
 

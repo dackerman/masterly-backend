@@ -4,9 +4,10 @@
 
 module Integrations.Gmail.JSON.Message where
 
-import Data.Text (Text)
-import Data.Int (Int32)
-import Data.Aeson.TH
+import           Data.Aeson.TH
+import           Data.Int (Int32)
+import           Data.Text (Text)
+import qualified Integrations.Gmail.Core as C
 
 data Body = Body
   { _attachmentId :: Maybe Text
@@ -42,3 +43,5 @@ data Message = Message
   } deriving (Show)
 $(deriveJSON defaultOptions{fieldLabelModifier = drop 1} ''Message)
 
+instance C.HasMessageRef Message where
+  getRef = _id
