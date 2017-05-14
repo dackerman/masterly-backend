@@ -28,7 +28,7 @@ import           Data.Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy.Char8 as B
-import           Data.Either (rights)
+import           Data.Either (rights, lefts)
 import           Data.Maybe (fromMaybe)
 import           Data.Monoid ((<>), mconcat)
 import           Data.Text (unpack, intercalate, Text)
@@ -100,13 +100,11 @@ listHistory startHistoryId maybeToken = do
   where params = paramsFromPageToken maybeToken ++ [("startHistoryId", startHistoryId)]
         processResponse json = ( mconcat $ extractFromHistoryItem <$> (fromMaybe [] $ LH._history json)
                                , PageToken <$> LH._nextPageToken json)
-        extractLabelsAdded item = LabelsAdded (LH._message item) (LH._labelIds item)
-        extractLabelsRemoved item = LabelsRemoved (LH._message item) (LH._labelIds item)
         extractFromHistoryItem item
-          = (MessageAdded <$> LH._messagesAdded item)
-            <> (MessageDeleted <$> LH._messagesDeleted item)
-            <> (extractLabelsAdded <$> LH._labelsAdded item)
-            <> (extractLabelsRemoved <$> LH._labelsRemoved item)
+          = (MessageAdded <$> (LH.refsAdded item))
+            <> (MessageDeleted <$> (LH.refsDeleted item))
+            <> (uncurry LabelsAdded <$> LH.labelsAdded item)
+            <> (uncurry LabelsRemoved <$> LH.labelsRemoved item)
 
 newtype PageToken = PageToken Text deriving Show
 
@@ -157,9 +155,11 @@ batchGetMessages :: [BatchGetMessage] -> GmailApiCall [BatchGetResponse]
 batchGetMessages [] = return []
 batchGetMessages reqs = do
   response <- batchGet getRequests
-  let parsed = rights $ parseBatchResponses reqs response
-  liftIO $ putStrLn $ "Got " <> show (length parsed) <> " responses from batch get"
-  return parsed
+  let parsed = parseBatchResponses reqs response
+      successful = rights parsed
+  liftIO $ putStrLn $ "Failures: " <> show (lefts parsed)
+  liftIO $ putStrLn $ "Got " <> show (length successful) <> " responses from batch get"
+  return successful
   where
     getRequests = toGetRequest <$> reqs
     toGetRequest (BatchGetMessage ref format) = (("/gmail/v1/users/me/messages/" <> MR._id ref), [("format", Just $ BSC.pack $ unpack $ formatParam format)])
