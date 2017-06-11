@@ -41,7 +41,7 @@ gmailSetup bytes params = do
 gmailRefresh :: B.ByteString -> IO [TaskCommand]
 gmailRefresh bytes = do
   let state = stateFromBytes bytes
-  B.putStrLn $ "refreshing gmail with " <> bytes
+  B.putStrLn $ "Starting gmail sync with " <> bytes
   process state
   return []
 

@@ -44,9 +44,11 @@ import           Integrations.Gmail.JSON.RefreshResponse (RefreshResponse)
 import qualified Integrations.Gmail.JSON.RefreshResponse as RR
 import           Integrations.Gmail.MultipartBodyParser (parseBatchResponseBody)
 import           Integrations.Secrets (gmailClientId, gmailClientSecret)
+import           Network.HTTP.Client (defaultManagerSettings, managerResponseTimeout, responseTimeoutMicro)
 import           Network.HTTP.Types.URI (renderQuery)
 import           Network.Wreq (FormParam(..))
 import qualified Network.Wreq as Wreq
+
 
 import           Prelude hiding (lookup)
 
@@ -82,7 +84,7 @@ listMessages maybeToken = do
   liftIO $ putStrLn $ "GET /messages page=" ++ show maybeToken
   response <- gmailHttp "/messages" params
   return $ jsonDecode response (\m -> (LM._messages m, PageToken <$> LM._nextPageToken m))
-  where params = paramsFromPageToken maybeToken
+  where params = paramsFromPageToken maybeToken ++ [("q", "in:inbox is:unread")]
 
 data History
   = MessageAdded MR.MessageRef
@@ -157,8 +159,11 @@ batchGetMessages reqs = do
   response <- batchGet getRequests
   let parsed = parseBatchResponses reqs response
       successful = rights parsed
-  liftIO $ putStrLn $ "Failures: " <> show (lefts parsed)
-  liftIO $ putStrLn $ "Got " <> show (length successful) <> " responses from batch get"
+      failed = lefts parsed
+  if length failed > 0 then do
+    liftIO $ B.putStrLn (response ^. Wreq.responseBody)
+    liftIO $ putStrLn $ "Failures: " <> show (lefts parsed)
+    else return ()
   return successful
   where
     getRequests = toGetRequest <$> reqs
@@ -220,6 +225,8 @@ gmailHttpOptions :: GmailTokenInfo -> [(Text, Text)] -> Wreq.Options
 gmailHttpOptions token params = Wreq.defaults & Wreq.params .~ params & auth & dontThrowExceptions
   where auth = Wreq.auth ?~ Wreq.oauth2Bearer (B.toStrict $ B.pack $ unpack $ TR.access_token token)
         dontThrowExceptions = Wreq.checkResponse .~ Just (\_ _ -> return ())
+        longTimeout =
+          Wreq.manager .~ Left (defaultManagerSettings {managerResponseTimeout = responseTimeoutMicro 60000000})
 
 
 withFreshToken :: (GmailTokenInfo -> IO (Wreq.Response a)) -> GmailApiCall (Wreq.Response a)

@@ -6,12 +6,13 @@ module Integrations.Gmail.Process
 where
 
 import           Control.Concurrent.Chan (Chan, newChan, writeChan, readChan)
+import           Control.Monad (forM_)
 import           Control.Monad.State (StateT(..), runStateT, execStateT, gets, modify)
 import           Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy as BL
 import           Data.Maybe (catMaybes, fromMaybe)
 import           Data.Set (difference, union, fromList, toList)
-import           Data.Text hiding (head, take)
+import           Data.Text hiding (head, take, length)
 import           Integrations.Gmail.Core
 import           Integrations.Gmail.Http
 import qualified Integrations.Gmail.JSON.Message as M
@@ -30,7 +31,7 @@ process state = case toTGmailState state of
   Just tState -> do
     historyChan <- newChan
 
-    (syncCommandsSink, syncCommandsSource) <- spawn $ bounded 5
+    (syncCommandsSink, syncCommandsSource) <- spawn $ bounded 1
     (messageResponseSink, messageResponseSource) <- spawn $ unbounded
 
     let syncCommandsProducer = fetchMessages >-> P.mapM (lift . dispatchSyncCommand) >-> toOutput syncCommandsSink
@@ -39,9 +40,8 @@ process state = case toTGmailState state of
 
     forkIO $ void $ execStateT (runEffect syncCommandsProducer) tState
 
-    -- Run 3 downloaders in parallel for better network utilization
-    forkIO $ void $ execStateT (runEffect bulkDownloader) tState
-    forkIO $ void $ execStateT (runEffect bulkDownloader) tState
+    -- Run 10 downloaders in parallel for better network utilization
+    --forM_ [1..10] (\_ -> do
     forkIO $ void $ execStateT (runEffect bulkDownloader) tState
 
     forkIO $ syncLastHistoryMessage historyChan
@@ -145,6 +145,7 @@ historyToSyncCommand (LabelsRemoved ref labels) = DoUpdateLabels $ UL ref [] lab
 
 batchGet :: [SyncCommand] -> Process [BatchGetResponse]
 batchGet commands = do
+  liftIO $ putStrLn $ "batch GET of " ++ (show . length) commands ++ " records"
   toGmailApiCall (batchGetMessages (catMaybes $ toRef <$> commands))
   where
     toRef (DoSyncMessage (SM ref format)) = Just $ BatchGetMessage ref format
