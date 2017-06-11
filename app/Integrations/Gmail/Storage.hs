@@ -1,11 +1,14 @@
 module Integrations.Gmail.Storage where
 
-import           Data.Aeson (eitherDecode, encode)
+import           Control.Monad (forM)
+import           Data.Aeson (eitherDecode, decode, encode)
 import qualified Data.ByteString.Lazy as BL
+import           Data.Maybe (catMaybes)
+import           Data.Monoid ((<>))
 import           Data.Text (unpack, Text)
 import           Integrations.Gmail.Core
 import qualified Integrations.Gmail.JSON.Message as M
-import           System.Directory (removeFile)
+import           System.Directory (removeFile, listDirectory)
 import           System.IO.Error (catchIOError, ioError, isDoesNotExistError)
 
 loadMessageFromStorage :: HasMessageRef a => a -> IO (Maybe M.Message)
@@ -26,7 +29,6 @@ loadMessageFromStorage ref = catchIOError loadMessage handleError
       else
         ioError err
 
-
 saveMessageToStorage :: M.Message -> IO ()
 saveMessageToStorage m = do
   BL.writeFile (messageFilePath $ M._id m) (encode m)
@@ -36,3 +38,9 @@ deleteMessage ref = removeFile (messageFilePath $ getRef ref)
 
 messageFilePath :: Text -> String
 messageFilePath msgId = "data/integrations/gmail/message_" ++ (unpack msgId)
+
+
+loadMessagesFromStorage :: IO [M.Message]
+loadMessagesFromStorage = do
+  files <- listDirectory "data/integrations/gmail/"
+  catMaybes <$> forM (take 10 files) (\f -> decode <$> BL.readFile ("data/integrations/gmail/" <> f))

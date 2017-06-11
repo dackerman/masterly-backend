@@ -11,6 +11,17 @@ module Core
   , minutes
   , hours
   , prioritize
+  , Incoming(..)
+  , Reminder
+  , Task
+  , Status(..)
+  , TimeLog
+  , TimeTrackEvent(..)
+  , Timestamp
+  , Prioritized
+  , PrioritizedF
+  , Archived
+  , TimeSpan
   ) where
 
 import Data.List (splitAt)
@@ -36,13 +47,14 @@ data TimeTrackEvent = ClockIn Timestamp | ClockOut Timestamp
 
 type Timestamp = Int
 
-data Message a = Message a
-  deriving Functor
-
-data PrioritizedF a = Priority a
+newtype PrioritizedF a = Priority a
   deriving Functor
 
 type Prioritized a = PrioritizedF [Task a]
+
+instance Monoid a => Monoid (PrioritizedF a) where
+  mempty = Priority mempty
+  mappend (Priority a) (Priority b) = Priority $ mappend a b
 
 data Archived a = Archived a
   deriving Functor

@@ -31,6 +31,13 @@ data Payload = Payload
   } deriving (Show)
 $(deriveJSON defaultOptions{fieldLabelModifier = drop 1} ''Payload)
 
+extractHeader :: Message -> Text -> Maybe Text
+extractHeader message key = find key (_headers $ _payload message)
+  where find _ [] = Nothing
+        find key (x:xs) = if (key == _name x)
+                          then Just (_value x)
+                          else find key xs
+
 data Message = Message
   { _id :: Text
   , _threadId :: Text
