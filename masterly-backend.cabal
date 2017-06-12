@@ -13,21 +13,8 @@ build-type:          Simple
 extra-source-files:  README.md
 cabal-version:       >=1.10
 
-library
-  hs-source-dirs:      src
-  exposed-modules:     Lib, Cli.Display, Core, Commands
-  build-depends:       base >= 4.7 && < 5
-                     , ncurses
-                     , vector
-                     , text
-                     , zippers
-                     , bytestring
-                     , aeson
-                     , directory
-  default-language:    Haskell2010
-
 executable masterly-backend-exe
-  hs-source-dirs:      app
+  hs-source-dirs:      src
   main-is:             Main.hs
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N -W
   build-depends:       base
@@ -50,7 +37,6 @@ executable masterly-backend-exe
                      , directory
                      , attoparsec
                      , split
-                     , masterly-backend
   default-language:    Haskell2010
   other-modules:     Integration
                      Integrations.Gmail
@@ -68,6 +54,8 @@ executable masterly-backend-exe
                      Integrations.Gmail.MultipartBodyParser
                      Integrations.Gmail.Storage
                      Webserver
+                     Core
+                     Commands
 
 
 test-suite masterly-backend-test
