@@ -6,6 +6,7 @@ module Commands
   ( loadState
   , saveState
   , user
+  , noteToMessage
   , ApplicationState(..)
   , Mail(..)
   , Note(..)
@@ -35,6 +36,9 @@ data Mail = Mail
 newtype Note = Note Text
 
 data Message = M Mail | N Note
+
+noteToMessage :: Note -> Message
+noteToMessage n = N n
 
 data ApplicationState = AppState
   { mail :: [Incoming Message]

@@ -5,6 +5,8 @@ module Core
   ( incoming
   , remindMe
   , toTask
+  , task
+  , tasks
   , prioritizeTask
   , archive
   , seconds
@@ -13,7 +15,7 @@ module Core
   , prioritize
   , Incoming(..)
   , Reminder
-  , Task
+  , Task(..)
   , Status(..)
   , TimeLog
   , TimeTrackEvent(..)
@@ -36,14 +38,17 @@ data Task a = Task Status TimeLog a
   deriving Functor
 
 data Status = Created | InProgress | Done | Cancelled
+  deriving Show
 
 data TimeLog = TimeLog [TimeTrackEvent]
+  deriving Show
 
 instance Monoid TimeLog where
   mempty = TimeLog []
   mappend (TimeLog a) (TimeLog b) = TimeLog $ mappend a b
 
 data TimeTrackEvent = ClockIn Timestamp | ClockOut Timestamp
+  deriving Show
 
 type Timestamp = Int
 
@@ -51,6 +56,9 @@ newtype PrioritizedF a = Priority a
   deriving Functor
 
 type Prioritized a = PrioritizedF [Task a]
+
+tasks :: PrioritizedF a -> a
+tasks (Priority a) = a
 
 instance Monoid a => Monoid (PrioritizedF a) where
   mempty = Priority mempty
@@ -76,14 +84,17 @@ incoming = Incoming
 toTask :: Incoming a -> Task a
 toTask (Incoming a) = Task Created mempty a
 
+task :: a -> Task a
+task a = Task Created mempty a
+
 remindMe :: a -> TimeSpan -> Reminder a
 remindMe a ts = Reminder ts a
 
 archive :: Incoming a -> Archived a
 archive (Incoming a) = Archived a
 
-prioritizeTask :: Functor f => Incoming a -> Int -> f [Task a] -> f [Task a]
-prioritizeTask = prioritize toTask
+prioritizeTask :: Functor f => a -> Int -> f [Task a] -> f [Task a]
+prioritizeTask = prioritize task
 
 prioritize :: Functor f => (a -> b) -> a -> Int -> f [b] -> f [b]
 prioritize f msg loc p = fmap ins p

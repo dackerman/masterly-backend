@@ -9,7 +9,7 @@ import           Control.Monad (forever)
 import           Data.IORef (newIORef, readIORef, modifyIORef, IORef)
 import           Data.Maybe (fromMaybe)
 import           Data.Monoid ((<>))
-import           Data.Text (Text, pack, toLower, stripStart, stripEnd, intercalate)
+import           Data.Text (Text, pack, toLower, stripStart, stripEnd, intercalate, breakOn)
 import qualified Data.Text.IO as TIO
 import           System.IO (hSetBuffering, stdout, BufferMode(..))
 
@@ -32,25 +32,46 @@ simpleRepl = do
     input <- parse . pack <$> getLine
     process app input
 
-data Command = LoadMail | ListIncoming | Unknown
+data Command
+  = LoadMail
+  | ListIncoming
+  | ListPrioritized
+  | AddNote Text
+  | Unknown
 
 parse :: Text -> Command
 parse input = case (cleaned input) of
   "load mail" -> LoadMail
   "list incoming" -> ListIncoming
-  _ -> Unknown
+  "list prioritized" -> ListPrioritized
+  line -> let (command, arg) = breakOn " " line
+          in case command of
+               "note" -> AddNote arg
+               _ -> Unknown
 
 process :: IORef ApplicationState -> Command -> IO ()
 process appRef LoadMail = do
   putStrLn "loading mail..."
   messages <- loadMessagesFromStorage
   modifyIORef appRef (\s -> s { mail = toIncomingMessage <$> messages })
-  process appRef ListIncoming
+  putStrLn "loaded mail."
 
 process appRef ListIncoming = do
-  putStrLn "listing incoming..."
+  putStrLn "== INCOMING =="
   app <- readIORef appRef
   TIO.putStrLn $ "* " <> (intercalate "\n* " $ renderIncoming <$> (mail app))
+
+process appRef ListPrioritized = do
+  putStrLn "== Prioritized =="
+  app <- readIORef appRef
+  TIO.putStrLn $ intercalate "\n" $ renderList <$> zip [1..] (tasks $ prioritized app)
+  where renderList (i, t) = pack (show i) <> ". " <> renderTaskMessage t
+
+-- TODO: Update the app state with the new note here
+process appRef (AddNote note) = do
+  modifyIORef appRef (\s -> s { prioritized = prioritizeTask (noteToMessage (Note note)) 0 (prioritized s) })
+  putStrLn "Saved note."
+
 
 process _ _ = do
   putStrLn "Don't know that command"
@@ -72,5 +93,17 @@ toMail message = Mail
   }
 
 renderIncoming :: Incoming Message -> Text
-renderIncoming (Incoming (M mail)) = "[" <> (from mail) <> "] " <> (subject mail)
-renderIncoming (Incoming (N (Note note))) = "note: " <> note
+renderIncoming (Incoming msg) = renderMessage msg
+
+renderTaskMessage :: Task Message -> Text
+renderTaskMessage (Task status _ m) = pack (show status) <> ": " <> renderMessage m
+
+renderMessage :: Message -> Text
+renderMessage (M mail) = renderMail mail
+renderMessage (N note) = renderNote note
+
+renderMail :: Mail -> Text
+renderMail mail = "[" <> (from mail) <> "] " <> (subject mail)
+
+renderNote :: Note -> Text
+renderNote (Note note) = "note: " <> note
