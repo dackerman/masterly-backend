@@ -1,18 +1,22 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Integrations.Gmail.Process
-  ( process
+  ( continueFromLastSyncPoint
+  , updateExistingMessages
   )
 where
 
 import           Control.Concurrent.Chan (Chan, newChan, writeChan, readChan)
-import           Control.Monad (forM_)
-import           Control.Monad.State (StateT(..), runStateT, execStateT, gets, modify)
+import           Control.Monad (forM, forM_)
+import           Control.Monad.State (StateT(..), runStateT, execStateT, evalStateT, gets, modify)
 import           Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy as BL
+import           Data.Foldable (foldr)
+import           Data.List (any)
 import           Data.Maybe (catMaybes, fromMaybe)
 import           Data.Set (difference, union, fromList, toList)
-import           Data.Text hiding (head, take, length)
+import           Data.Text (Text, unpack)
+import           Data.Time (getCurrentTime, formatTime, defaultTimeLocale)
 import           Integrations.Gmail.Core
 import           Integrations.Gmail.Http
 import qualified Integrations.Gmail.JSON.Message as M
@@ -25,10 +29,10 @@ import qualified Pipes.Prelude as P
 
 import           Prelude hiding (log)
 
-process :: GmailState -> IO ()
-process state = case toTGmailState state of
+continueFromLastSyncPoint :: GmailState -> IO ()
+continueFromLastSyncPoint state = case toTGmailState state of
   Nothing -> putStrLn "No API token for syncing!"
-  Just tState -> do
+  Just oState -> do
     historyChan <- newChan
 
     (syncCommandsSink, syncCommandsSource) <- spawn $ bounded 1
@@ -36,19 +40,58 @@ process state = case toTGmailState state of
 
     let syncCommandsProducer = fetchMessages >-> P.mapM (lift . dispatchSyncCommand) >-> toOutput syncCommandsSink
         bulkDownloader = fromInput syncCommandsSource >-> P.mapM batchGet >-> P.concat >-> toOutput messageResponseSink
-        messagePersister = fromInput messageResponseSource >-> P.mapM_ (persist historyChan)
+        messagePersister = fromInput messageResponseSource >-> P.mapM_ (persistWithChan historyChan)
 
-    forkIO $ void $ execStateT (runEffect syncCommandsProducer) tState
+    -- Preflight gmail request to get new tokens if necessary
+    tState <- execStateT preflightGmailTokens oState
+
+    forkIO $ execStateT (runEffect syncCommandsProducer) tState >> performGC
 
     -- Run 10 downloaders in parallel for better network utilization
     --forM_ [1..10] (\_ -> do
-    forkIO $ void $ execStateT (runEffect bulkDownloader) tState
+    forkIO $ execStateT (runEffect bulkDownloader) tState >> performGC
 
-    forkIO $ syncLastHistoryMessage historyChan
+    forkIO $ syncLastHistoryMessage historyChan >> performGC
 
     runEffect messagePersister
     putStrLn "Gmail Processing is complete!"
 
+bailWithoutState :: (TGmailState -> IO ()) -> GmailState -> IO ()
+bailWithoutState f state = do
+  case toTGmailState state of
+    Just tState -> f tState
+    Nothing -> putStrLn "No API token for syncing!"
+
+updateExistingMessages = bailWithoutState updateExistingMessagesT
+
+updateExistingMessagesT :: TGmailState -> IO ()
+updateExistingMessagesT state = do
+  batches <- (chunked 100 . fmap syncMinimal . filter notInInbox) <$> loadMessagesFromStorage
+  let queryForUpdates = preflightGmailTokens >> forM batches batchGet
+  (results, creds) <- runStateT queryForUpdates state
+  forM_ (concat results) persist
+  storeIntegrationState $ toGmailState creds
+
+preflightGmailTokens :: Process ()
+preflightGmailTokens = toGmailApiCall doPreflightRequest
+
+syncMinimal :: M.Message -> SyncCommand
+syncMinimal msg = DoSyncMessage $ SM (MR.MessageRef (M._id msg) (M._threadId msg)) Minimal
+
+notInInbox :: M.Message -> Bool
+notInInbox = inBoth . M._labelIds
+  where inBoth ls = any ((==) "INBOX") ls &&  any ((==) "UNREAD") ls
+
+data ChunkState a = CS Int [a] [[a]]
+
+chunked :: Int -> [a] -> [[a]]
+chunked n l | n < 1 = [l]
+chunked n l = fromChunkState $ foldr chunk (CS (n + 1) [] []) l
+  where chunk c (CS 1 cs xs) = CS n [c] (xs ++ [cs])
+        chunk c (CS v cs xs) = CS (v - 1) (cs ++ [c]) xs
+
+fromChunkState :: ChunkState a -> [[a]]
+fromChunkState (CS _ x xs) = xs ++ [x]
 
 loadIntegrationState :: IO GmailState
 loadIntegrationState = do
@@ -145,23 +188,26 @@ historyToSyncCommand (LabelsRemoved ref labels) = DoUpdateLabels $ UL ref [] lab
 
 batchGet :: [SyncCommand] -> Process [BatchGetResponse]
 batchGet commands = do
-  liftIO $ putStrLn $ "batch GET of " ++ (show . length) commands ++ " records"
+  currentTimestamp <- liftIO $ formatTime defaultTimeLocale "%F" <$> getCurrentTime
+  liftIO $ putStrLn $ currentTimestamp ++ " batch GET of " ++ (show . length) commands ++ " records"
   toGmailApiCall (batchGetMessages (catMaybes $ toRef <$> commands))
   where
     toRef (DoSyncMessage (SM ref format)) = Just $ BatchGetMessage ref format
     toRef _ = Nothing
 
-persist :: Chan Text -> BatchGetResponse -> IO ()
-persist historyChan (FullMessage message) = do
-  writeChan historyChan (M._historyId message)
-  saveMessageToStorage message
-
-persist historyChan (MinimalMessage messageLabels) = do
-  writeChan historyChan (ML._historyId messageLabels)
-  maybeExistingMessage <- loadMessageFromStorage messageLabels
+persist :: BatchGetResponse -> IO ()
+persist (FullMessage message) = saveMessageToStorage message
+persist (MinimalMessage labels) = do
+  maybeExistingMessage <- loadMessageFromStorage labels
   case maybeExistingMessage of
-    Just message -> saveMessageToStorage (mergeLabels messageLabels message)
-    Nothing -> putStrLn $ "No message to update labels, skipping " ++ show (ML._id messageLabels)
+    Just message -> saveMessageToStorage (mergeLabels labels message)
+    Nothing -> putStrLn $ "No message to update labels, skipping " ++ show (ML._id labels)
+
+persistWithChan :: Chan Text -> BatchGetResponse -> IO ()
+persistWithChan historyChan fm@(FullMessage message) =
+  writeChan historyChan (M._historyId message) >> persist fm
+persistWithChan historyChan mm@(MinimalMessage messageLabels) =
+  writeChan historyChan (ML._historyId messageLabels) >> persist mm
 
 
 dispatchSyncCommand :: [SyncCommand] -> IO [SyncCommand]

@@ -37,6 +37,7 @@ executable masterly-backend-exe
                      , directory
                      , attoparsec
                      , split
+                     , time
   default-language:    Haskell2010
   other-modules:     Integration
                      Integrations.Gmail

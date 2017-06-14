@@ -14,8 +14,9 @@ module Commands
   ) where
 
 import           Core
-import           Data.Aeson (decode, encode)
+import           Data.Aeson (decodeStrict, encode)
 import           Data.Aeson.TH (deriveJSON, defaultOptions)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import           Data.Maybe (Maybe(..))
 import           Data.Maybe (fromMaybe)
@@ -73,11 +74,11 @@ loadState :: UserName -> IO ApplicationState
 loadState u = do
   exists <- doesFileExist path
   maybeApp <- case exists of
-                True -> decode <$> BSL.readFile path
+                True -> decodeStrict <$> BS.readFile path
                 False -> pure Nothing
   return $ fromMaybe emptyApp maybeApp
   where path = appFileName u
 
 
 saveState :: UserName -> ApplicationState -> IO ()
-saveState u app = BSL.writeFile (appFileName u) (encode app)
+saveState u app = BS.writeFile (appFileName u) (BSL.toStrict $ encode app)

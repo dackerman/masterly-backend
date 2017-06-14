@@ -3,7 +3,7 @@
 module Main where
 
 -- import qualified Cli.Display as Cli
--- import qualified Webserver
+import qualified Webserver
 
 import           Control.Monad (forever)
 import           Data.IORef (newIORef, readIORef, modifyIORef, IORef)
@@ -19,7 +19,7 @@ import qualified Integrations.Gmail.JSON.Message as M
 import           Integrations.Gmail.Storage (loadMessagesFromStorage)
 
 main :: IO ()
--- main = Webserver.main
+-- main = hSetBuffering stdout NoBuffering >> Webserver.main
 -- main = Cli.run
 main = hSetBuffering stdout NoBuffering >> simpleRepl
 
@@ -37,6 +37,7 @@ data Command
   | ListIncoming
   | ListPrioritized
   | AddNote Text
+  | SyncGmail
   | Unknown
 
 parse :: Text -> Command
@@ -44,38 +45,52 @@ parse input = case (cleaned input) of
   "load mail" -> LoadMail
   "list incoming" -> ListIncoming
   "list prioritized" -> ListPrioritized
+  "sync gmail" -> SyncGmail
   line -> let (command, arg) = breakOn " " line
           in case command of
                "note" -> AddNote arg
                _ -> Unknown
 
+notInInbox :: M.Message -> Bool
+notInInbox = inBoth . M._labelIds
+  where inBoth ls = any ((==) "INBOX") ls &&  any ((==) "UNREAD") ls
+
 process :: IORef ApplicationState -> Command -> IO ()
 process appRef LoadMail = do
   putStrLn "loading mail..."
-  messages <- loadMessagesFromStorage
+  messages <- filter notInInbox <$> loadMessagesFromStorage
   modifyIORef appRef (\s -> s { mail = toIncomingMessage <$> messages })
   putStrLn "loaded mail."
+  save appRef
 
 process appRef ListIncoming = do
   putStrLn "== INCOMING =="
   app <- readIORef appRef
   TIO.putStrLn $ "* " <> (intercalate "\n* " $ renderIncoming <$> (mail app))
+  save appRef
 
 process appRef ListPrioritized = do
   putStrLn "== Prioritized =="
   app <- readIORef appRef
   TIO.putStrLn $ intercalate "\n" $ renderList <$> zip [1..] (tasks $ prioritized app)
+  save appRef
   where renderList (i, t) = pack (show i) <> ". " <> renderTaskMessage t
 
--- TODO: Update the app state with the new note here
 process appRef (AddNote note) = do
   modifyIORef appRef (\s -> s { prioritized = prioritizeTask (noteToMessage (Note note)) 0 (prioritized s) })
   putStrLn "Saved note."
+  save appRef
 
+process _ SyncGmail = do
+  putStrLn "Syncing Gmail"
+  Webserver.main
 
 process _ _ = do
   putStrLn "Don't know that command"
 
+
+save :: IORef ApplicationState -> IO ()
+save ref = readIORef ref >>= saveState (user "dackerman")
 
 cleaned :: Text -> Text
 cleaned = stripStart . stripEnd . toLower

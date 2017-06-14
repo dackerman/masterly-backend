@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Integrations.Gmail.Core where
 
@@ -14,6 +15,9 @@ toTGmailState :: GmailState -> Maybe TGmailState
 toTGmailState orig = case token orig of
   Just tok -> Just $ MkGmail tok (lastMessageID orig)
   Nothing -> Nothing
+
+toGmailState :: TGmailState -> GmailState
+toGmailState MkGmail{..} = MkGmail (Just token) lastMessageID
 
 data GmailStateG a = MkGmail
   { token :: a

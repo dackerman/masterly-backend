@@ -11,6 +11,7 @@ module Integrations.Gmail.Http
   , requestTokens
   , authCodeUrl
   , batchGetMessages
+  , doPreflightRequest
   , GmailApiCall
   , GmailError(..)
   , History(..)
@@ -171,16 +172,23 @@ batchGetMessages reqs = do
 
 type HttpParams = [(BS.ByteString, Maybe BS.ByteString)]
 
-parseBatchResponses :: [BatchGetMessage] -> Wreq.Response B.ByteString -> [Either String BatchGetResponse]
+parseBatchResponses :: [BatchGetMessage] -> Wreq.Response B.ByteString -> [Either BatchGetError BatchGetResponse]
 parseBatchResponses requests response =
   (uncurry parseBatchResponse) <$> zip requests bodyChunks
   where
     contentTypeHeader = response ^. Wreq.responseHeader "Content-Type"
     bodyChunks = parseBatchResponseBody contentTypeHeader (B.toStrict $ response ^. Wreq.responseBody)
 
-parseBatchResponse :: BatchGetMessage -> B.ByteString -> Either String BatchGetResponse
-parseBatchResponse (BatchGetMessage _ Minimal) body = MinimalMessage <$> eitherDecode body
-parseBatchResponse (BatchGetMessage _ Full) body = FullMessage <$> eitherDecode body
+type BatchGetError = (String, B.ByteString)
+
+parseBatchResponse :: BatchGetMessage -> B.ByteString -> Either BatchGetError BatchGetResponse
+parseBatchResponse (BatchGetMessage _ Minimal) body = MinimalMessage <$> eitherDecodeWithInput body
+parseBatchResponse (BatchGetMessage _ Full) body = FullMessage <$> eitherDecodeWithInput body
+
+eitherDecodeWithInput :: FromJSON a => B.ByteString -> Either (String, B.ByteString) a
+eitherDecodeWithInput input = case eitherDecode input of
+  Left error -> Left (error, input)
+  Right val -> Right val
 
 batchGet :: [(Text, HttpParams)] -> GmailApiCall (Wreq.Response B.ByteString)
 batchGet requests = do
@@ -220,6 +228,12 @@ gmailHttp path params = do
     doRequest token =
       Wreq.getWith (gmailHttpOptions token params) (gmailUrl $ unpack path)
 
+doPreflightRequest :: GmailApiCall ()
+doPreflightRequest = do
+  response <- gmailHttp "/profile" []
+  case response of
+    Left (err, message) -> liftIO $ B.putStrLn $ "code: " <> (B.pack $ show err) <> " " <> message
+    Right response -> liftIO $ B.putStrLn response
 
 gmailHttpOptions :: GmailTokenInfo -> [(Text, Text)] -> Wreq.Options
 gmailHttpOptions token params = Wreq.defaults & Wreq.params .~ params & auth & dontThrowExceptions

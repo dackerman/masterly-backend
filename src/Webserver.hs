@@ -35,7 +35,7 @@ main :: IO ()
 main = do
   -- opts <- execParser programOpts
   syncIntegrations
-  app
+  -- app
 
 integrations :: Map Text Integration
 integrations = fromList $ (\i -> (integrationId i, i)) <$> ints
@@ -85,8 +85,7 @@ executeTaskCommand integration (UpdateState bytes) = do
   storeIntegrationState name bytes
 
 syncIntegrations :: IO ()
-syncIntegrations = void $ traverse startSyncing integrations
-  where startSyncing integration = every (hours 3) (void $ syncIntegration integration)
+syncIntegrations = void $ traverse syncIntegration integrations
 
 seconds :: Int -> Int
 seconds s = s * 1000000
@@ -109,6 +108,7 @@ syncIntegration integration = do
   bytes <- loadIntegrationState name
   commands <- (refresh integration) bytes
   forM_ commands (executeTaskCommand integration)
+  putStrLn "done syncing Integrations"
 
 
 loadIntegrationState :: Text -> IO BL.ByteString

@@ -1,14 +1,15 @@
 module Integrations.Gmail.Storage where
 
-import           Control.Monad (forM)
-import           Data.Aeson (eitherDecode, decode, encode)
+import           Control.Monad (mapM)
+import           Data.Aeson (eitherDecode, decodeStrict', encode)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import           Data.Maybe (catMaybes)
 import           Data.Monoid ((<>))
 import           Data.Text (unpack, Text)
 import           Integrations.Gmail.Core
 import qualified Integrations.Gmail.JSON.Message as M
-import           System.Directory (removeFile, listDirectory)
+import           System.Directory (removeFile, listDirectory, doesFileExist)
 import           System.IO.Error (catchIOError, ioError, isDoesNotExistError)
 
 loadMessageFromStorage :: HasMessageRef a => a -> IO (Maybe M.Message)
@@ -34,13 +35,23 @@ saveMessageToStorage m = do
   BL.writeFile (messageFilePath $ M._id m) (encode m)
 
 deleteMessage :: HasMessageRef a => a -> IO ()
-deleteMessage ref = removeFile (messageFilePath $ getRef ref)
+deleteMessage ref = do
+  fileExists <- doesFileExist path
+  if fileExists
+    then removeFile path
+    else return ()
+  where path = messageFilePath $ getRef ref
 
 messageFilePath :: Text -> String
 messageFilePath msgId = "data/integrations/gmail/message_" ++ (unpack msgId)
 
+loadMessagesFromStorage = loadMessagesFromStoragef id
 
-loadMessagesFromStorage :: IO [M.Message]
-loadMessagesFromStorage = do
-  files <- listDirectory "data/integrations/gmail/"
-  catMaybes <$> forM (take 10 files) (\f -> decode <$> BL.readFile ("data/integrations/gmail/" <> f))
+loadMessagesFromStoragef :: ([FilePath] -> [FilePath]) -> IO [M.Message]
+loadMessagesFromStoragef f = do
+  files <- (fmap appendDir) . f <$> listDirectory "data/integrations/gmail/"
+  catMaybes <$> mapM (fmap decodeStrict' . BS.readFile) files
+  where appendDir f = "data/integrations/gmail/" <> f
+
+loadNMessagesFromStorage :: Int -> IO [M.Message]
+loadNMessagesFromStorage n = loadMessagesFromStoragef (take n)
