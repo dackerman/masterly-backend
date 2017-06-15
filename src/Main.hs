@@ -7,9 +7,10 @@ import qualified Webserver
 
 import           Control.Monad (forever)
 import           Data.IORef (newIORef, readIORef, modifyIORef, IORef)
+import           Data.List (foldl')
 import           Data.Maybe (fromMaybe)
 import           Data.Monoid ((<>))
-import           Data.Text (Text, pack, toLower, stripStart, stripEnd, intercalate, breakOn)
+import           Data.Text (Text, pack, toLower, stripStart, stripEnd, intercalate, breakOn, length, replicate)
 import qualified Data.Text.IO as TIO
 import           System.IO (hSetBuffering, stdout, BufferMode(..))
 
@@ -17,6 +18,8 @@ import           Commands
 import           Core
 import qualified Integrations.Gmail.JSON.Message as M
 import           Integrations.Gmail.Storage (loadMessagesFromStorage)
+
+import           Prelude hiding (length, replicate)
 
 main :: IO ()
 -- main = hSetBuffering stdout NoBuffering >> Webserver.main
@@ -55,6 +58,10 @@ notInInbox :: M.Message -> Bool
 notInInbox = inBoth . M._labelIds
   where inBoth ls = any ((==) "INBOX") ls &&  any ((==) "UNREAD") ls
 
+lengthOfIncoming :: Incoming Message -> Int
+lengthOfIncoming (Incoming (M m)) = 2 + (length $ from m)
+lengthOfIncoming _ = 0
+
 process :: IORef ApplicationState -> Command -> IO ()
 process appRef LoadMail = do
   putStrLn "loading mail..."
@@ -66,7 +73,8 @@ process appRef LoadMail = do
 process appRef ListIncoming = do
   putStrLn "== INCOMING =="
   app <- readIORef appRef
-  TIO.putStrLn $ "* " <> (intercalate "\n* " $ renderIncoming <$> (mail app))
+  let fill = 1 + (foldl' max 0 $ lengthOfIncoming <$> mail app)
+  TIO.putStrLn $ "* " <> (intercalate "\n* " $ renderIncoming fill <$> (mail app))
   save appRef
 
 process appRef ListPrioritized = do
@@ -107,18 +115,22 @@ toMail message = Mail
   , body = fromMaybe "" ((M._data . M._body . M._payload) message)
   }
 
-renderIncoming :: Incoming Message -> Text
-renderIncoming (Incoming msg) = renderMessage msg
+renderIncoming :: Int -> Incoming Message -> Text
+renderIncoming fill (Incoming msg) = renderMessage fill msg
+
+rightFill :: Int -> Text -> Text
+rightFill fill rendered = rendered <> replicate numBlanks " "
+  where numBlanks = max 0 (fill - length rendered)
 
 renderTaskMessage :: Task Message -> Text
-renderTaskMessage (Task status _ m) = pack (show status) <> ": " <> renderMessage m
+renderTaskMessage (Task status _ m) = pack (show status) <> ": " <> renderMessage 0 m
 
-renderMessage :: Message -> Text
-renderMessage (M mail) = renderMail mail
-renderMessage (N note) = renderNote note
+renderMessage :: Int -> Message -> Text
+renderMessage fill (M mail) = renderMail fill mail
+renderMessage _ (N note) = renderNote note
 
-renderMail :: Mail -> Text
-renderMail mail = "[" <> (from mail) <> "] " <> (subject mail)
+renderMail :: Int -> Mail -> Text
+renderMail fill mail = (rightFill fill $ "[" <> (from mail) <> "]") <> (subject mail)
 
 renderNote :: Note -> Text
 renderNote (Note note) = "note: " <> note
