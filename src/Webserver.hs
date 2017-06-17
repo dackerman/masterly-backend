@@ -34,8 +34,8 @@ programOpts = O.info
 main :: IO ()
 main = do
   -- opts <- execParser programOpts
-  syncIntegrations
-  -- app
+  -- syncIntegrations
+  app
 
 integrations :: Map Text Integration
 integrations = fromList $ (\i -> (integrationId i, i)) <$> ints

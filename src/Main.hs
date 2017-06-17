@@ -2,7 +2,7 @@
 
 module Main where
 
--- import qualified Cli.Display as Cli
+import qualified Cli.Display as Cli
 import qualified Webserver
 
 import           Control.Monad (forever)
@@ -15,7 +15,10 @@ import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import           Data.Time (UTCTime, parseTimeM, defaultTimeLocale)
+import qualified Data.Vector as Vec
 import           System.IO (hSetBuffering, stdout, BufferMode(..))
+
+import qualified Brick.BChan as BC
 
 import           Commands
 import           Core
@@ -26,17 +29,24 @@ import           Prelude hiding (length, replicate)
 
 main :: IO ()
 -- main = hSetBuffering stdout NoBuffering >> Webserver.main
--- main = Cli.run
+-- main = Cli.main
 main = hSetBuffering stdout NoBuffering >> simpleRepl
 
 simpleRepl :: IO ()
 simpleRepl = do
   appState <- loadState $ user "dackerman"
   app <- newIORef appState
-  forever $ do
-    putStr "> "
-    input <- parse . T.pack <$> getLine
-    process app input
+  chan <- BC.newBChan 1
+  Cli.main chan (handler app chan)
+--  forever $ do
+--    putStr "> "
+--    input <- parse . T.pack <$> getLine
+--    process app input
+
+type CliChan = BC.BChan Cli.AppEvents
+
+handler :: IORef ApplicationState -> CliChan -> Text -> IO ()
+handler app chan text = process app chan (parse text) >> done chan
 
 data Command
   = LoadMail
@@ -44,7 +54,7 @@ data Command
   | ListPrioritized
   | AddNote Text
   | SyncGmail
-  | Unknown
+  | Unknown Text
 
 parse :: Text -> Command
 parse input = case (cleaned input) of
@@ -55,7 +65,7 @@ parse input = case (cleaned input) of
   line -> let (command, arg) = T.breakOn " " line
           in case command of
                "note" -> AddNote arg
-               _ -> Unknown
+               t -> Unknown t
 
 notInInbox :: M.Message -> Bool
 notInInbox = inBoth . M._labelIds
@@ -64,40 +74,49 @@ notInInbox = inBoth . M._labelIds
 lengthOfIncoming :: Incoming Mail -> Int
 lengthOfIncoming (Incoming m) = 2 + (T.length $ from m)
 
-process :: IORef ApplicationState -> Command -> IO ()
-process appRef LoadMail = do
-  putStrLn "loading mail..."
+updateStatus :: CliChan -> Text -> IO ()
+updateStatus ch = BC.writeBChan ch . Cli.UpdateStatus
+
+renderListMode :: CliChan -> Vec.Vector Text -> IO ()
+renderListMode ch = BC.writeBChan ch . Cli.RenderList
+
+done :: CliChan -> IO ()
+done ch = BC.writeBChan ch Cli.IOComplete
+
+process :: IORef ApplicationState -> CliChan -> Command -> IO ()
+process appRef chan LoadMail = do
+  updateStatus chan "loading mail..."
   messages <- filter notInInbox <$> loadMessagesFromStorage
   modifyIORef appRef (\s -> s { mail = toIncomingMessage <$> messages })
-  putStrLn "loaded mail."
+  updateStatus chan "loaded mail."
+  updateStatus chan "saving application..."
   save appRef
+  updateStatus chan "saved."
 
-process appRef ListIncoming = do
-  putStrLn "== INCOMING =="
+process appRef chan ListIncoming = do
   app <- readIORef appRef
   let fill = 1 + (foldl' max 0 $ lengthOfIncoming <$> mail app)
       grouped = groupBy senderGrouping $ mail app
-  TIO.putStrLn $ renderGroups fill grouped -- (intercalate "\n* " $ renderIncoming fill <$> (mail app))
-  save appRef
+  renderListMode chan $ renderGroups fill grouped -- (intercalate "\n* " $ renderIncoming fill <$> (mail app))
+  updateStatus chan $ (T.pack . show . length) grouped <> " senders in incoming."
 
-process appRef ListPrioritized = do
-  putStrLn "== Prioritized =="
+process appRef chan ListPrioritized = do
   app <- readIORef appRef
-  TIO.putStrLn $ T.intercalate "\n" $ renderList <$> zip [1..] (tasks $ prioritized app)
-  save appRef
+  renderListMode chan $ Vec.fromList $ renderList <$> zip [1..] (tasks $ prioritized app)
   where renderList (i, t) = T.pack (show i) <> ". " <> renderTaskMessage t
 
-process appRef (AddNote note) = do
+process appRef chan (AddNote note) = do
   modifyIORef appRef (\s -> s { prioritized = prioritizeTask (noteToMessage (Note note)) 0 (prioritized s) })
-  putStrLn "Saved note."
   save appRef
+  updateStatus chan "Saved note."
 
-process _ SyncGmail = do
-  putStrLn "Syncing Gmail"
-  Webserver.main
+process _ chan SyncGmail = do
+  updateStatus chan "Syncing Gmail"
+  Webserver.syncIntegrations
+  updateStatus chan "Synced Gmail"
 
-process _ _ = do
-  putStrLn "Don't know that command"
+process _ chan (Unknown t) = do
+  updateStatus chan $ "Don't know the command \"" <> t <> "\""
 
 data Sender = Sender Text [Incoming Mail]
 
@@ -109,10 +128,10 @@ type Grouping = Mail -> Text
 senderGrouping :: Grouping
 senderGrouping = domain
 
-groupBy :: Grouping -> [Incoming Mail] -> [Sender]
-groupBy g = sortGroupByCount . unmap . foldl' f Map.empty
+groupBy :: Grouping -> [Incoming Mail] -> Vec.Vector Sender
+groupBy g = Vec.fromList . sortGroupByCount . unmap . foldl' f Map.empty
   where f map mail = Map.alter (addMail mail) (g $ incomingToMail mail) map
-        unmap map = (\(k,v) -> Sender k v) <$> Map.toList map
+        unmap m = (\(k,v) -> Sender k v) <$> Map.toList m
         addMail mail Nothing = Just [mail]
         addMail mail (Just l) = Just $ mail : l
 
@@ -148,8 +167,8 @@ domain m = domain
 textToTimestamp :: Text -> Maybe UTCTime
 textToTimestamp = parseTimeM True defaultTimeLocale "%s000" . T.unpack
 
-renderGroups :: Int -> [Sender] -> Text
-renderGroups fill senders = T.intercalate "\n\n" (renderSender fill <$> senders)
+renderGroups :: Int -> Vec.Vector Sender -> Vec.Vector Text
+renderGroups fill senders = renderSender fill <$> senders
 
 renderSender :: Int -> Sender -> Text
 renderSender fill (Sender domain mail) = "* " <> rightFill (fill + 1) domain <> renderSenderMail
