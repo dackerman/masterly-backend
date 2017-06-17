@@ -22,6 +22,7 @@ import           Data.Maybe (Maybe(..))
 import           Data.Maybe (fromMaybe)
 import           Data.Monoid ((<>))
 import           Data.Text (Text, unpack)
+import           Data.Time (UTCTime)
 import           System.Directory (doesFileExist)
 
 import           Prelude hiding (readFile)
@@ -30,6 +31,7 @@ data Mail = Mail
   { messageID :: Text
   , from :: Text
   , to :: Text
+  , receivedDate :: Maybe UTCTime
   , subject :: Text
   , body :: Text
   }
@@ -42,7 +44,7 @@ noteToMessage :: Note -> Message
 noteToMessage n = N n
 
 data ApplicationState = AppState
-  { mail :: [Incoming Message]
+  { mail :: [Incoming Mail]
   , prioritized :: Prioritized Message
   }
 
