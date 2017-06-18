@@ -1,10 +1,9 @@
 module Integration where
 
-import Data.Text (Text)
-import Data.ByteString.Lazy (ByteString)
+import           Data.ByteString (ByteString)
+import           Data.Map (Map)
+import           Data.Text (Text)
 import qualified Data.Text.Lazy as TL
-import Data.Map (Map)
-import Data.Aeson (FromJSON, ToJSON)
 
 newtype Identifier = Id Text
   deriving Show

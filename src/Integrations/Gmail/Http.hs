@@ -8,6 +8,7 @@ module Integrations.Gmail.Http
   , listHistory
   , loadMessage
   , loadMessageLabels
+  , archiveMessage
   , requestTokens
   , authCodeUrl
   , batchGetMessages
@@ -32,7 +33,8 @@ import qualified Data.ByteString.Lazy.Char8 as B
 import           Data.Either (rights, lefts)
 import           Data.Maybe (fromMaybe)
 import           Data.Monoid ((<>), mconcat)
-import           Data.Text (unpack, intercalate, Text)
+import           Data.Text (pack, unpack, intercalate, Text)
+import qualified Data.Text.IO as TIO
 import           Debug.Trace (traceShowId)
 import           Integrations.Gmail.JSON.GmailTokenInfo (GmailTokenInfo)
 import qualified Integrations.Gmail.JSON.GmailTokenInfo as TR
@@ -41,11 +43,11 @@ import qualified Integrations.Gmail.JSON.ListMessagesResponse as LM
 import qualified Integrations.Gmail.JSON.Message as M
 import qualified Integrations.Gmail.JSON.MessageLabels as ML
 import qualified Integrations.Gmail.JSON.MessageRef as MR
+import qualified Integrations.Gmail.JSON.ModifyRequest as MoR
 import           Integrations.Gmail.JSON.RefreshResponse (RefreshResponse)
 import qualified Integrations.Gmail.JSON.RefreshResponse as RR
 import           Integrations.Gmail.MultipartBodyParser (parseBatchResponseBody)
 import           Integrations.Secrets (gmailClientId, gmailClientSecret)
-import           Network.HTTP.Client (defaultManagerSettings, managerResponseTimeout, responseTimeoutMicro)
 import           Network.HTTP.Types.URI (renderQuery)
 import           Network.Wreq (FormParam(..))
 import qualified Network.Wreq as Wreq
@@ -60,22 +62,21 @@ data GmailError = GmailError Int String | ParsingError String
 type GmailApiCall a = StateT GmailTokenInfo IO a
 
 
-loadMessage :: MR.MessageRef -> GmailApiCall (GetMessageResponse M.Message)
+loadMessage :: MR.MessageRef -> GmailApiCall (Either GmailError M.Message)
 loadMessage = loadMessageGeneric Full
 
-loadMessageLabels :: MR.MessageRef -> GmailApiCall (GetMessageResponse ML.Message)
+loadMessageLabels :: MR.MessageRef -> GmailApiCall (Either GmailError ML.Message)
 loadMessageLabels = loadMessageGeneric Minimal
 
-type GetMessageResponse a = Either GmailError a
 data Format = Full | Minimal
 
 formatParam :: Format -> Text
 formatParam Full = "full"
 formatParam Minimal = "minimal"
 
-loadMessageGeneric :: FromJSON a => Format -> MR.MessageRef -> GmailApiCall (GetMessageResponse a)
+loadMessageGeneric :: FromJSON a => Format -> MR.MessageRef -> GmailApiCall (Either GmailError a)
 loadMessageGeneric format ref = do
-  response <- gmailHttp ("/messages/" <> MR._id ref) [("format", formatParam format)]
+  response <- gmailHttpGet ("/messages/" <> MR._id ref) [("format", formatParam format)]
   return $ jsonDecode response id
 
 type ListMessagesResponse = ([MR.MessageRef], Maybe PageToken)
@@ -83,9 +84,17 @@ type ListMessagesResponse = ([MR.MessageRef], Maybe PageToken)
 listMessages :: Maybe PageToken -> GmailApiCall (Either GmailError ListMessagesResponse)
 listMessages maybeToken = do
   liftIO $ putStrLn $ "GET /messages page=" ++ show maybeToken
-  response <- gmailHttp "/messages" params
+  response <- gmailHttpGet "/messages" params
   return $ jsonDecode response (\m -> (LM._messages m, PageToken <$> LM._nextPageToken m))
   where params = paramsFromPageToken maybeToken ++ [("q", "in:inbox is:unread")]
+
+archiveMessage :: Text -> GmailApiCall (Either GmailError ())
+archiveMessage ref = do
+  let path = "/messages/" <> ref <> "/modify"
+  liftIO $ TIO.putStrLn $ "POST " <> path
+  response <- gmailHttpPost path [] body
+  return $ const () <$> responseToGmail response
+  where body = MoR.removeLabel "INBOX" MoR.emptyRequest
 
 data History
   = MessageAdded MR.MessageRef
@@ -98,7 +107,7 @@ type ListHistoryResponse = ([History], Maybe PageToken)
 listHistory :: Text -> Maybe PageToken -> GmailApiCall (Either GmailError ListHistoryResponse)
 listHistory startHistoryId maybeToken = do
   liftIO $ putStrLn $ "GET /history startHistory=" ++ unpack startHistoryId ++ " page=" ++ show maybeToken
-  response <- traceShowId <$> gmailHttp "/history" params
+  response <- traceShowId <$> gmailHttpGet "/history" params
   return $ jsonDecode response processResponse
   where params = paramsFromPageToken maybeToken ++ [("startHistoryId", startHistoryId)]
         processResponse json = ( mconcat $ extractFromHistoryItem <$> (fromMaybe [] $ LH._history json)
@@ -122,6 +131,8 @@ jsonDecode response f = case response of
   Left (status, message) -> Left $ GmailError status (show message)
   Right json -> (_Left %~ ParsingError) . (_Right %~ f) $ (eitherDecode json)
 
+
+
 authCodeUrl :: Text -> Text
 authCodeUrl returnPath =
   qndUrl "https://accounts.google.com/o/oauth2/v2/auth" params
@@ -130,13 +141,13 @@ authCodeUrl returnPath =
           , ("prompt", "consent")
           , ("response_type", "code")
           , ("client_id", "676252041546-l6vntlt41kkrddmg1veuk4p761gbgtf0.apps.googleusercontent.com")
-          , ("scope", "https://www.googleapis.com/auth/gmail.readonly")
+          , ("scope", "https://www.googleapis.com/auth/gmail.readonly+https://www.googleapis.com/auth/gmail.modify")
           , ("access_type", "offline")
           ]
 
 requestTokens :: Text -> B.ByteString -> IO GmailTokenInfo
 requestTokens redirectUri authCode = do
-  B.putStrLn $ "going to request tokens for " <> authCode
+  TIO.putStrLn $ "going to request tokens for " <> (pack . show) authCode <> " clientid: " <> pack gmailClientId <> " clientSecret: " <> pack gmailClientSecret <> " redirect: " <> redirectUri
   r <- Wreq.asJSON =<< Wreq.post "https://www.googleapis.com/oauth2/v4/token" body
   return (r ^. Wreq.responseBody)
 
@@ -215,22 +226,34 @@ renderBatchGetBody requests = body
 
 type GmailResponse = Either (Int, B.ByteString) B.ByteString
 
-gmailHttp :: Text -> [(Text, Text)] -> GmailApiCall GmailResponse
-gmailHttp path params = do
-  httpResponse <- withFreshToken doRequest
+responseToGmail :: GmailResponse -> Either GmailError B.ByteString
+responseToGmail (Right a) = Right a
+responseToGmail (Left (status, err)) = Left $ GmailError status (show err)
+
+gmailHttpGet :: Text -> [(Text, Text)] -> GmailApiCall GmailResponse
+gmailHttpGet path params = gmailHttp doRequest
+  where doRequest token = Wreq.getWith (gmailHttpOptions token params) (gmailUrl $ unpack path)
+
+gmailHttpPost :: ToJSON a => Text -> [(Text, Text)] -> a -> GmailApiCall GmailResponse
+gmailHttpPost path params json = gmailHttp doRequest
+  where doRequest token = Wreq.postWith (gmailHttpOptions token params) (gmailUrl $ unpack path) body
+        body = toJSON json
+
+type GmailRequester = GmailTokenInfo -> IO (Wreq.Response B.ByteString)
+
+gmailHttp :: GmailRequester -> GmailApiCall GmailResponse
+gmailHttp requester = do
+  httpResponse <- withFreshToken requester
   let body = httpResponse ^. Wreq.responseBody
       status = httpResponse ^. Wreq.responseStatus . Wreq.statusCode
   case status of
     200 -> return $ Right body
     _ -> return $ Left (status, body)
 
-  where
-    doRequest token =
-      Wreq.getWith (gmailHttpOptions token params) (gmailUrl $ unpack path)
 
 doPreflightRequest :: GmailApiCall ()
 doPreflightRequest = do
-  response <- gmailHttp "/profile" []
+  response <- gmailHttpGet "/profile" []
   case response of
     Left (err, message) -> liftIO $ B.putStrLn $ "code: " <> (B.pack $ show err) <> " " <> message
     Right response -> liftIO $ B.putStrLn response
@@ -239,8 +262,6 @@ gmailHttpOptions :: GmailTokenInfo -> [(Text, Text)] -> Wreq.Options
 gmailHttpOptions token params = Wreq.defaults & Wreq.params .~ params & auth & dontThrowExceptions
   where auth = Wreq.auth ?~ Wreq.oauth2Bearer (B.toStrict $ B.pack $ unpack $ TR.access_token token)
         dontThrowExceptions = Wreq.checkResponse .~ Just (\_ _ -> return ())
-        longTimeout =
-          Wreq.manager .~ Left (defaultManagerSettings {managerResponseTimeout = responseTimeoutMicro 60000000})
 
 
 withFreshToken :: (GmailTokenInfo -> IO (Wreq.Response a)) -> GmailApiCall (Wreq.Response a)

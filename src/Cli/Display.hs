@@ -32,6 +32,7 @@ import           Brick.Widgets.Core
   , withAttr
   , padTop
   , padRight
+  , padBottom
   )
 import qualified Brick.Widgets.Edit as E
 import qualified Brick.Widgets.List as L
@@ -40,7 +41,7 @@ import qualified Data.Vector as Vec
 
 import           Prelude hiding (concat)
 
-drawUI :: AppState -> [Widget Names]
+drawUI :: AppState a -> [Widget Names]
 drawUI AS{..} = [ui]
     where
       l = _asList
@@ -50,8 +51,8 @@ drawUI AS{..} = [ui]
         Just i -> str (show (i + 1))
       total = str $ show $ Vec.length $ l^.(L.listElementsL)
       box = case _asMode of
-        SelectingItems -> L.renderList listDrawElement True l
-        _ -> padRight T.Max $ padTop T.Max $ vBox [str " "] -- L.renderList listDrawElement True l
+        SelectingItems -> L.renderList (listDrawElement _asRenderer) True l
+        _ -> padRight T.Max $ padTop T.Max $ vBox [str " "]
       ui = vBox [ C.hCenter box
                 , editorBox _asReplInput _asMode
                 , statusBox _asStatus]
@@ -67,7 +68,7 @@ editorAttr _ = editorReadyAttr
 statusBox :: Text -> Widget Names
 statusBox t = withAttr statusAttr $ txt t
 
-appEvent :: AppState -> T.BrickEvent Names AppEvents -> T.EventM Names (T.Next AppState)
+appEvent :: AppState a -> T.BrickEvent Names (AppEvents a) -> T.EventM Names (T.Next (AppState a))
 appEvent s@AS{..} (T.VtyEvent e) =
   case (_asMode, e) of
     (_, V.EvKey V.KEsc []) -> M.halt s
@@ -77,50 +78,72 @@ appEvent s@AS{..} (T.VtyEvent e) =
       M.continue $ s { _asReplInput = E.applyEdit Z.clearZipper _asReplInput
                      , _asMode = WaitingForIO
                      , _asStatus = ""}
-    (AcceptingCommands, _) -> uE $ handleEditorEvents s e
+    (AcceptingCommands, e) -> uE $ handleEditorEvents s e
+    (SelectingItems, V.EvKey (V.KChar 'q') []) -> M.continue $ s { _asMode = AcceptingCommands }
+    (SelectingItems, V.EvKey k _) -> do
+      let sel = L.listSelectedElement _asList
+      case sel of
+        Just (i, a) -> do
+          handled <- liftIO $ _asAction k a
+          if not handled
+            then uL $ handleListEvents s e
+            else M.continue s
+        Nothing -> uL $ handleListEvents s e
     (SelectingItems, _) -> uL $ handleListEvents s e
-    (WaitingForIO, _) -> M.continue s
+    _ -> M.continue s
   where uE m = fmap (updateEditor' s) <$> m
         uL m = fmap (updateList' s) <$> m
 appEvent s (T.AppEvent (UpdateStatus t)) = M.continue $ s { _asStatus = t }
-appEvent s@AS{..} (T.AppEvent (RenderList ts)) = M.continue $ s { _asList = newList
-                                                                , _asMode = SelectingItems }
+appEvent s@AS{..} (T.AppEvent (RenderList action ts)) = M.continue $ s { _asList = newList
+                                                                       , _asMode = SelectingItems
+                                                                       , _asAction = action }
   where newList = L.listReplace ts (Just 0) _asList
 appEvent s@AS{..} (T.AppEvent IOComplete) = case _asMode of
   WaitingForIO -> M.continue $ s { _asMode = AcceptingCommands }
   _ -> M.continue s
 appEvent s _ = M.continue s
 
-handleEditorEvents :: AppState -> V.Event -> T.EventM Names (T.Next (E.Editor Text Names))
+handleEditorEvents :: AppState a -> V.Event -> T.EventM Names (T.Next (E.Editor Text Names))
 handleEditorEvents AS{..} e = E.handleEditorEvent e _asReplInput >>= M.continue
 
-handleListEvents :: AppState -> V.Event -> T.EventM Names (T.Next (L.List Names Text))
+handleListEvents :: AppState a -> V.Event -> T.EventM Names (T.Next (L.List Names a))
 handleListEvents AS{..} ev = L.handleListEvent ev _asList >>= M.continue
 
 updateList' s lst = s { _asList = lst }
 updateEditor' s e = s { _asReplInput = e }
 
-listDrawElement :: Bool -> Text -> Widget Names
-listDrawElement _ a = txt a
+listDrawElement :: (a -> Text) -> Bool -> a -> Widget Names
+listDrawElement fn _ a = padBottom (T.Pad 3) $ txt $ fn a
 
 data Names = TheList | ReplInput | StatusBar
   deriving (Eq, Ord, Show)
 
 data AppMode = AcceptingCommands | SelectingItems | WaitingForIO
 
-data AppEvents = UpdateStatus Text | RenderList (Vec.Vector Text) | IOComplete
+type ListAction a = V.Key -> a -> IO Bool
 
-data AppState = AS
-  { _asList :: L.List Names Text
+noAction :: ListAction a
+noAction _ _ = return False
+
+data AppEvents a = UpdateStatus Text | RenderList (ListAction a) (Vec.Vector a) | IOComplete
+
+type ListRenderer a = a -> Text
+
+data AppState a = AS
+  { _asList :: L.List Names a
+  , _asRenderer :: ListRenderer a
+  , _asAction :: ListAction a
   , _asReplInput :: E.Editor Text Names
   , _asMode :: AppMode
   , _asStatus :: Text
   , _asHandler :: AppHandler
   }
 
-initialState :: AppHandler -> AppState
-initialState h = AS
-  { _asList = L.list TheList (Vec.fromList ["a","b","c"]) 1
+initialState :: AppHandler -> ListRenderer a -> AppState a
+initialState h renderer = AS
+  { _asList = L.list TheList Vec.empty 1
+  , _asRenderer = renderer
+  , _asAction = noAction
   , _asReplInput = E.editorText ReplInput renderRepl (Just 1) ""
   , _asMode = AcceptingCommands
   , _asStatus = "accepting commands."
@@ -153,7 +176,7 @@ theMap = A.attrMap V.defAttr
 
 type AppHandler = Text -> IO ()
 
-theApp :: M.App AppState AppEvents Names
+theApp :: M.App (AppState a) (AppEvents a) Names
 theApp =
     M.App { M.appDraw = drawUI
           , M.appChooseCursor = M.showFirstCursor
@@ -162,9 +185,9 @@ theApp =
           , M.appAttrMap = const theMap
           }
 
-main :: BC.BChan AppEvents -> AppHandler -> IO ()
-main eventChan handler = void $ M.customMain
+main :: BC.BChan (AppEvents a) -> AppHandler -> ListRenderer a -> IO ()
+main eventChan handler renderer = void $ M.customMain
   (V.mkVty V.defaultConfig)
   (Just eventChan)
   theApp
-  (initialState handler)
+  (initialState handler renderer)

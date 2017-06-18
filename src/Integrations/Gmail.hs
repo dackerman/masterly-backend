@@ -4,17 +4,17 @@
 {-# LANGUAGE BangPatterns #-}
 
 module Integrations.Gmail
-  (gmailIntegration)
+  ( gmailIntegration
+  , stateFromBytes)
 where
 
 import           Data.Aeson
+import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Lazy.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as BLC
 import           Data.Map (lookup)
 import           Data.Maybe (fromMaybe)
 import           Data.Monoid ((<>))
-import           Data.Text.Encoding (encodeUtf8)
-import           Data.Text.Lazy (toStrict)
 import           Integration
 import           Integrations.Gmail.Core
 import           Integrations.Gmail.Http
@@ -34,17 +34,17 @@ gmailSetup bytes params = do
   case lookup "code" params of
     Nothing -> return [Redirect authCodeUrl]
     Just code -> do
-      response <- requestTokens "http://localhost:8080/api/integrations/gmail" (BL.fromStrict $ encodeUtf8 $ toStrict code)
-      return [ StoreState (encode $ state {token = Just response})
+      response <- requestTokens "http://localhost:8080/api/integrations/gmail" (BLC.pack . show $ code)
+      return [ StoreState (BL.toStrict . encode $ state {token = Just response})
              , Redirect (const "/")]
 
 gmailRefresh :: B.ByteString -> IO [TaskCommand]
 gmailRefresh bytes = do
   let state = stateFromBytes bytes
-  B.putStrLn $ "Starting gmail sync with " <> bytes
+  BLC.putStrLn $ "Starting gmail sync with " <> BLC.fromStrict bytes
   updateExistingMessages state
   continueFromLastSyncPoint state
   return []
 
 stateFromBytes :: B.ByteString -> GmailState
-stateFromBytes = fromMaybe emptyGmailState . decode
+stateFromBytes = fromMaybe emptyGmailState . decodeStrict

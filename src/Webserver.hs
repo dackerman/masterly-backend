@@ -6,6 +6,7 @@ module Webserver where
 
 import           Control.Concurrent (forkIO, threadDelay)
 import           Control.Monad (void, forM_)
+import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import           Data.Map (Map, fromList, lookup)
 import           Data.Semigroup ((<>))
@@ -111,13 +112,13 @@ syncIntegration integration = do
   putStrLn "done syncing Integrations"
 
 
-loadIntegrationState :: Text -> IO BL.ByteString
+loadIntegrationState :: Text -> IO B.ByteString
 loadIntegrationState integrationName = do
-  BL.readFile (integrationFile integrationName)
+  B.readFile (integrationFile integrationName)
 
-storeIntegrationState :: Text -> BL.ByteString -> IO ()
+storeIntegrationState :: Text -> B.ByteString -> IO ()
 storeIntegrationState integrationName bytes =
-  BL.writeFile (integrationFile integrationName) bytes
+  B.writeFile (integrationFile integrationName) bytes
 
 storeRecord :: Identifier -> Document -> Fields -> IO ()
 storeRecord _ _ _ = return ()

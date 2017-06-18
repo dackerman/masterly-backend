@@ -5,7 +5,8 @@ module Main where
 import qualified Cli.Display as Cli
 import qualified Webserver
 
-import           Control.Monad (forever)
+import           Control.Monad (forever, forM)
+import           Control.Monad.State (evalStateT)
 import           Data.IORef (newIORef, readIORef, modifyIORef, IORef)
 import           Data.List (foldl', length, sortOn)
 import qualified Data.Map as Map
@@ -19,9 +20,14 @@ import qualified Data.Vector as Vec
 import           System.IO (hSetBuffering, stdout, BufferMode(..))
 
 import qualified Brick.BChan as BC
+import qualified Graphics.Vty as V
 
 import           Commands
 import           Core
+import           Integrations.Gmail (stateFromBytes)
+import qualified Integrations.Gmail.Core as Core
+import qualified Integrations.Gmail.Http as Http
+import           Integrations.Gmail.JSON.GmailTokenInfo (GmailTokenInfo)
 import qualified Integrations.Gmail.JSON.Message as M
 import           Integrations.Gmail.Storage (loadMessagesFromStorage)
 
@@ -32,20 +38,32 @@ main :: IO ()
 -- main = Cli.main
 main = hSetBuffering stdout NoBuffering >> simpleRepl
 
+data AppState = AS
+  { appState :: ApplicationState
+  , token :: GmailTokenInfo
+  }
+
+type StateRef = IORef AppState
+
 simpleRepl :: IO ()
 simpleRepl = do
   appState <- loadState $ user "dackerman"
-  app <- newIORef appState
-  chan <- BC.newBChan 1
-  Cli.main chan (handler app chan)
+  maybeTok <- Core.toTGmailState . stateFromBytes <$> Webserver.loadIntegrationState "gmail"
+  case maybeTok of
+    Nothing -> putStrLn "no gmail token, exiting"
+    Just tok -> do
+      app <- newIORef $ AS appState $ Core.token tok
+      chan <- BC.newBChan 10
+      Cli.main chan (handler app chan) (renderSender 0)
 --  forever $ do
 --    putStr "> "
 --    input <- parse . T.pack <$> getLine
 --    process app input
 
-type CliChan = BC.BChan Cli.AppEvents
 
-handler :: IORef ApplicationState -> CliChan -> Text -> IO ()
+type CliChan = BC.BChan (Cli.AppEvents Sender)
+
+handler :: StateRef -> CliChan -> Text -> IO ()
 handler app chan text = process app chan (parse text) >> done chan
 
 data Command
@@ -77,36 +95,49 @@ lengthOfIncoming (Incoming m) = 2 + (T.length $ from m)
 updateStatus :: CliChan -> Text -> IO ()
 updateStatus ch = BC.writeBChan ch . Cli.UpdateStatus
 
-renderListMode :: CliChan -> Vec.Vector Text -> IO ()
-renderListMode ch = BC.writeBChan ch . Cli.RenderList
+renderListMode :: CliChan -> StateRef -> Vec.Vector Sender -> IO ()
+renderListMode ch appRef senders = BC.writeBChan ch $ Cli.RenderList hlc senders
+  where hlc = handleListCommand appRef ch
 
 done :: CliChan -> IO ()
 done ch = BC.writeBChan ch Cli.IOComplete
 
-process :: IORef ApplicationState -> CliChan -> Command -> IO ()
+handleListCommand :: StateRef -> CliChan -> V.Key -> Sender -> IO Bool
+handleListCommand appRef chan (V.KChar 'y') (Sender _ messages) = do
+  (AS _ tok) <- readIORef appRef
+  updateStatus chan $ "archiving " <> (T.pack . show . length) messages <> " messages..."
+  results <- evalStateT (forM ids Http.archiveMessage) tok
+  updateStatus chan $ T.concat $ T.pack . show <$> results
+  return True
+  where ids = messageID . incomingToMail <$> messages
+
+handleListCommand _ _ _ _ = return False
+
+updatingAppState :: (ApplicationState -> ApplicationState) -> AppState -> AppState
+updatingAppState f a = a { appState = f (appState a) }
+
+process :: StateRef -> CliChan -> Command -> IO ()
 process appRef chan LoadMail = do
   updateStatus chan "loading mail..."
   messages <- filter notInInbox <$> loadMessagesFromStorage
-  modifyIORef appRef (\s -> s { mail = toIncomingMessage <$> messages })
+  modifyIORef appRef $ updatingAppState (\s -> s { mail = toIncomingMessage <$> messages })
   updateStatus chan "loaded mail."
   updateStatus chan "saving application..."
   save appRef
   updateStatus chan "saved."
 
 process appRef chan ListIncoming = do
-  app <- readIORef appRef
-  let fill = 1 + (foldl' max 0 $ lengthOfIncoming <$> mail app)
-      grouped = groupBy senderGrouping $ mail app
-  renderListMode chan $ renderGroups fill grouped -- (intercalate "\n* " $ renderIncoming fill <$> (mail app))
+  grouped <- (groupBy senderGrouping . mail) <$> appState <$> readIORef appRef
+  renderListMode chan appRef grouped
   updateStatus chan $ (T.pack . show . length) grouped <> " senders in incoming."
 
-process appRef chan ListPrioritized = do
-  app <- readIORef appRef
-  renderListMode chan $ Vec.fromList $ renderList <$> zip [1..] (tasks $ prioritized app)
+process appRef chan ListPrioritized = return ()
+  --app <- readIORef appRef
+  --renderListMode chan $ Vec.fromList $ renderList <$> zip [1..] (tasks $ prioritized app)
   where renderList (i, t) = T.pack (show i) <> ". " <> renderTaskMessage t
 
 process appRef chan (AddNote note) = do
-  modifyIORef appRef (\s -> s { prioritized = prioritizeTask (noteToMessage (Note note)) 0 (prioritized s) })
+  modifyIORef appRef $ updatingAppState (\s -> s { prioritized = prioritizeTask (noteToMessage (Note note)) 0 (prioritized s) })
   save appRef
   updateStatus chan "Saved note."
 
@@ -138,8 +169,8 @@ groupBy g = Vec.fromList . sortGroupByCount . unmap . foldl' f Map.empty
 sortGroupByCount :: [Sender] -> [Sender]
 sortGroupByCount = sortOn (negate . groupSize)
 
-save :: IORef ApplicationState -> IO ()
-save ref = readIORef ref >>= saveState (user "dackerman")
+save :: StateRef -> IO ()
+save ref = readIORef ref >>= saveState (user "dackerman") . appState
 
 cleaned :: Text -> Text
 cleaned = T.stripStart . T.stripEnd . T.toLower
@@ -171,7 +202,7 @@ renderGroups :: Int -> Vec.Vector Sender -> Vec.Vector Text
 renderGroups fill senders = renderSender fill <$> senders
 
 renderSender :: Int -> Sender -> Text
-renderSender fill (Sender domain mail) = "* " <> rightFill (fill + 1) domain <> renderSenderMail
+renderSender fill (Sender domain mail) = "* " <> rightFill (fill + 1) domain <> renderSenderMail <> "\n"
   where renderSenderMail = "\n " <> T.intercalate "\n " (renderMail fill . incomingToMail <$> mail)
 
 renderIncoming :: Int -> Incoming Mail -> Text
