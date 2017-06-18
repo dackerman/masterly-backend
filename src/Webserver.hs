@@ -7,7 +7,6 @@ module Webserver where
 import           Control.Concurrent (forkIO, threadDelay)
 import           Control.Monad (void, forM_)
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BL
 import           Data.Map (Map, fromList, lookup)
 import           Data.Semigroup ((<>))
 import           Data.Text (Text, pack, unpack)

@@ -8,7 +8,7 @@ where
 
 import           Control.Concurrent.Chan (Chan, newChan, writeChan, readChan)
 import           Control.Monad (forM, forM_)
-import           Control.Monad.State (StateT(..), runStateT, execStateT, evalStateT, gets, modify)
+import           Control.Monad.State (StateT(..), runStateT, execStateT, gets, modify)
 import           Data.Aeson (encode, decode)
 import qualified Data.ByteString.Lazy as BL
 import           Data.Foldable (foldr)
@@ -202,13 +202,14 @@ persist (MinimalMessage labels) = do
   case maybeExistingMessage of
     Just message -> saveMessageToStorage (mergeLabels labels message)
     Nothing -> putStrLn $ "No message to update labels, skipping " ++ show (ML._id labels)
+persist _ = return ()
 
 persistWithChan :: Chan Text -> BatchGetResponse -> IO ()
 persistWithChan historyChan fm@(FullMessage message) =
   writeChan historyChan (M._historyId message) >> persist fm
 persistWithChan historyChan mm@(MinimalMessage messageLabels) =
   writeChan historyChan (ML._historyId messageLabels) >> persist mm
-
+persistWithChan _ _ = return ()
 
 dispatchSyncCommand :: [SyncCommand] -> IO [SyncCommand]
 dispatchSyncCommand commands = catMaybes <$> mapM doDispatch commands

@@ -49,6 +49,8 @@ executable masterly-backend-exe
                      Integrations.Gmail
                      Integrations.Gmail.Core
                      Integrations.Gmail.Http
+                     Integrations.Gmail.JSON.BatchModifyRequest
+                     Integrations.Gmail.JSON.ModifyRequest
                      Integrations.Gmail.JSON.GmailTokenInfo
                      Integrations.Gmail.JSON.ListMessagesResponse
                      Integrations.Gmail.JSON.Message

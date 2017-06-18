@@ -5,11 +5,9 @@ module Cli.Display where
 import           Control.Concurrent (forkIO)
 import           Control.Monad (void)
 import           Control.Monad.IO.Class (liftIO)
-import           Data.Maybe (fromMaybe)
 import           Data.Monoid
 import           Data.Text (Text, concat)
 import qualified Graphics.Vty as V
-import           Lens.Micro ((^.))
 
 import qualified Brick.AttrMap as A
 import qualified Brick.BChan as BC
@@ -19,13 +17,10 @@ import           Brick.Types
   )
 import qualified Brick.Types as T
 import           Brick.Util (fg, bg, on)
-import qualified Brick.Widgets.Border as B
 import qualified Brick.Widgets.Center as C
 import           Brick.Widgets.Core
-  ( (<+>)
-  , str
+  ( str
   , txt
-  , vLimit
   , hLimit
   , vBox
   , hBox
@@ -45,11 +40,6 @@ drawUI :: AppState a -> [Widget Names]
 drawUI AS{..} = [ui]
     where
       l = _asList
-      label = str "Item " <+> cur <+> str " of " <+> total
-      cur = case l^.(L.listSelectedL) of
-        Nothing -> str "-"
-        Just i -> str (show (i + 1))
-      total = str $ show $ Vec.length $ l^.(L.listElementsL)
       box = case _asMode of
         SelectingItems -> L.renderList (listDrawElement _asRenderer) True l
         _ -> padRight T.Max $ padTop T.Max $ vBox [str " "]
@@ -83,7 +73,7 @@ appEvent s@AS{..} (T.VtyEvent e) =
     (SelectingItems, V.EvKey k _) -> do
       let sel = L.listSelectedElement _asList
       case sel of
-        Just (i, a) -> do
+        Just (_, a) -> do
           handled <- liftIO $ _asAction k a
           if not handled
             then uL $ handleListEvents s e

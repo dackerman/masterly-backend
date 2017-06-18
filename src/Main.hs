@@ -5,7 +5,7 @@ module Main where
 import qualified Cli.Display as Cli
 import qualified Webserver
 
-import           Control.Monad (forever, forM)
+import           Control.Monad (forM)
 import           Control.Monad.State (evalStateT)
 import           Data.IORef (newIORef, readIORef, modifyIORef, IORef)
 import           Data.List (foldl', length, sortOn)
@@ -14,7 +14,6 @@ import           Data.Maybe (fromMaybe)
 import           Data.Monoid ((<>))
 import           Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
 import           Data.Time (UTCTime, parseTimeM, defaultTimeLocale)
 import qualified Data.Vector as Vec
 import           System.IO (hSetBuffering, stdout, BufferMode(..))
@@ -131,10 +130,7 @@ process appRef chan ListIncoming = do
   renderListMode chan appRef grouped
   updateStatus chan $ (T.pack . show . length) grouped <> " senders in incoming."
 
-process appRef chan ListPrioritized = return ()
-  --app <- readIORef appRef
-  --renderListMode chan $ Vec.fromList $ renderList <$> zip [1..] (tasks $ prioritized app)
-  where renderList (i, t) = T.pack (show i) <> ". " <> renderTaskMessage t
+process _ _ ListPrioritized = return ()
 
 process appRef chan (AddNote note) = do
   modifyIORef appRef $ updatingAppState (\s -> s { prioritized = prioritizeTask (noteToMessage (Note note)) 0 (prioritized s) })
