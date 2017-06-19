@@ -187,6 +187,7 @@ historyToSyncCommand (LabelsAdded ref labels) = DoUpdateLabels $ UL ref labels [
 historyToSyncCommand (LabelsRemoved ref labels) = DoUpdateLabels $ UL ref [] labels
 
 batchGet :: [SyncCommand] -> Process [BatchGetResponse]
+batchGet [] = return []
 batchGet commands = do
   currentTimestamp <- liftIO $ formatTime defaultTimeLocale "%F" <$> getCurrentTime
   liftIO $ putStrLn $ currentTimestamp ++ " batch GET of " ++ (show . length) commands ++ " records"

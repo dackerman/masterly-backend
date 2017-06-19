@@ -5,10 +5,9 @@ module Main where
 import qualified Cli.Display as Cli
 import qualified Webserver
 
-import           Control.Monad (forM)
 import           Control.Monad.State (evalStateT)
 import           Data.IORef (newIORef, readIORef, modifyIORef, IORef)
-import           Data.List (foldl', length, sortOn)
+import           Data.List (foldl', length, sortOn, deleteFirstsBy)
 import qualified Data.Map as Map
 import           Data.Maybe (fromMaybe)
 import           Data.Monoid ((<>))
@@ -53,11 +52,7 @@ simpleRepl = do
     Just tok -> do
       app <- newIORef $ AS appState $ Core.token tok
       chan <- BC.newBChan 10
-      Cli.main chan (handler app chan) (renderSender 0)
---  forever $ do
---    putStr "> "
---    input <- parse . T.pack <$> getLine
---    process app input
+      Cli.main chan (handler app chan) renderSender
 
 
 type CliChan = BC.BChan (Cli.AppEvents Sender)
@@ -101,16 +96,29 @@ renderListMode ch appRef senders = BC.writeBChan ch $ Cli.RenderList hlc senders
 done :: CliChan -> IO ()
 done ch = BC.writeBChan ch Cli.IOComplete
 
-handleListCommand :: StateRef -> CliChan -> V.Key -> Sender -> IO Bool
+handleListCommand :: StateRef -> CliChan -> V.Key -> Sender -> IO (Cli.ActionResult Sender)
 handleListCommand appRef chan (V.KChar 'y') (Sender _ messages) = do
   (AS _ tok) <- readIORef appRef
-  updateStatus chan $ "archiving " <> (T.pack . show . length) messages <> " messages..."
-  results <- evalStateT (forM ids Http.archiveMessage) tok
-  updateStatus chan $ T.concat $ T.pack . show <$> results
-  return True
+  updateStatus chan $ "archiving " <> lengthTxt <> " messages..."
+  result <- evalStateT (Http.archiveMessages ids) tok
+  case result of
+    Left error -> do
+      updateStatus chan $ (T.pack . show) error
+      return Cli.HandledNoChange
+    Right _ -> do
+      modifyIORef appRef $ updatingAppState (\s -> s { mail = removeMail (mail s) messages })
+      updateStatus chan $ "archived " <> lengthTxt <> " messages."
+      newGrouping <- groupBySender appRef
+      return $ Cli.Handled newGrouping
   where ids = messageID . incomingToMail <$> messages
+        lengthTxt = T.pack . show . length $ messages
 
-handleListCommand _ _ _ _ = return False
+handleListCommand _ _ _ _ = return Cli.NotHandled
+
+removeMail :: [Incoming Mail] -> [Incoming Mail] -> [Incoming Mail]
+removeMail = deleteFirstsBy idsMatch
+  where idsMatch (Incoming m1) (Incoming m2) = messageID m1 == messageID m2
+
 
 updatingAppState :: (ApplicationState -> ApplicationState) -> AppState -> AppState
 updatingAppState f a = a { appState = f (appState a) }
@@ -126,7 +134,7 @@ process appRef chan LoadMail = do
   updateStatus chan "saved."
 
 process appRef chan ListIncoming = do
-  grouped <- (groupBy senderGrouping . mail) <$> appState <$> readIORef appRef
+  grouped <- groupBySender appRef
   renderListMode chan appRef grouped
   updateStatus chan $ (T.pack . show . length) grouped <> " senders in incoming."
 
@@ -144,6 +152,9 @@ process _ chan SyncGmail = do
 
 process _ chan (Unknown t) = do
   updateStatus chan $ "Don't know the command \"" <> t <> "\""
+
+groupBySender :: IORef AppState -> IO (Vec.Vector Sender)
+groupBySender appRef = (groupBy senderGrouping . mail) <$> appState <$> readIORef appRef
 
 data Sender = Sender Text [Incoming Mail]
 
@@ -191,15 +202,22 @@ domain :: Mail -> Text
 domain m = domain
   where (_, domain) = T.breakOn "@" $ from m
 
+sender :: Mail -> Text
+sender m = sender
+  where (sender, _) = T.breakOn "<" $ from m
+
 textToTimestamp :: Text -> Maybe UTCTime
 textToTimestamp = parseTimeM True defaultTimeLocale "%s000" . T.unpack
 
-renderGroups :: Int -> Vec.Vector Sender -> Vec.Vector Text
-renderGroups fill senders = renderSender fill <$> senders
+renderGroups :: Vec.Vector Sender -> Vec.Vector Text
+renderGroups senders = renderSender <$> senders
 
-renderSender :: Int -> Sender -> Text
-renderSender fill (Sender domain mail) = "* " <> rightFill (fill + 1) domain <> renderSenderMail <> "\n"
-  where renderSenderMail = "\n " <> T.intercalate "\n " (renderMail fill . incomingToMail <$> mail)
+renderSender :: Sender -> Text
+renderSender (Sender domain incoming) = "* " <> domain <> renderSenderMail <> "\n"
+  where renderSenderMail = "\n " <> T.intercalate "\n " (renderMail fill <$> mail)
+        mail = incomingToMail <$> incoming
+        fill = foldl' getMax 0 mail
+        getMax currentMax mail = max currentMax (T.length $ sender mail)
 
 renderIncoming :: Int -> Incoming Mail -> Text
 renderIncoming fill (Incoming msg) = renderMail fill msg
@@ -216,7 +234,7 @@ renderMessage fill (M mail) = renderMail fill mail
 renderMessage _ (N note) = renderNote note
 
 renderMail :: Int -> Mail -> Text
-renderMail fill mail = (rightFill fill $ "[" <> (from mail) <> "]") <> (subject mail)
+renderMail fill mail = rightFill fill (sender mail) <> " | " <> (subject mail)
 
 renderNote :: Note -> Text
 renderNote (Note note) = "note: " <> note

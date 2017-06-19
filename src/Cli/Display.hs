@@ -73,11 +73,12 @@ appEvent s@AS{..} (T.VtyEvent e) =
     (SelectingItems, V.EvKey k _) -> do
       let sel = L.listSelectedElement _asList
       case sel of
-        Just (_, a) -> do
+        Just (i, a) -> do
           handled <- liftIO $ _asAction k a
-          if not handled
-            then uL $ handleListEvents s e
-            else M.continue s
+          case handled of
+            NotHandled -> uL $ handleListEvents s e
+            Handled newList -> M.continue $ s { _asList = L.listReplace newList (Just i) _asList }
+            HandledNoChange -> M.continue s
         Nothing -> uL $ handleListEvents s e
     (SelectingItems, _) -> uL $ handleListEvents s e
     _ -> M.continue s
@@ -110,10 +111,12 @@ data Names = TheList | ReplInput | StatusBar
 
 data AppMode = AcceptingCommands | SelectingItems | WaitingForIO
 
-type ListAction a = V.Key -> a -> IO Bool
+data ActionResult a = NotHandled | HandledNoChange | Handled (Vec.Vector a)
+
+type ListAction a = V.Key -> a -> IO (ActionResult a)
 
 noAction :: ListAction a
-noAction _ _ = return False
+noAction _ _ = return NotHandled
 
 data AppEvents a = UpdateStatus Text | RenderList (ListAction a) (Vec.Vector a) | IOComplete
 

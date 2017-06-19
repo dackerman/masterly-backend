@@ -39,6 +39,7 @@ import           Data.Text (Text)
 import qualified Data.Text as T
 
 import           Integrations.Gmail.JSON.BatchModifyRequest (BatchModifyRequest)
+import qualified Integrations.Gmail.JSON.BatchModifyRequest as BM
 import           Integrations.Gmail.JSON.GmailTokenInfo (GmailTokenInfo)
 import qualified Integrations.Gmail.JSON.GmailTokenInfo as TR
 import qualified Integrations.Gmail.JSON.ListHistoryResponse as LH
@@ -119,9 +120,12 @@ archiveMessage ref = do
   return $ const () <$> responseToGmail response
   where body = MoR.removeLabel "INBOX" MoR.emptyRequest
 
-archiveMessages :: BatchModifyRequest -> GmailApiCall (Either GmailError ())
-archiveMessages request = do
-  response <- responseToGmail <$> gmailHttpPost "/messages/modify" [] request
+archiveMessages :: [Text] -> GmailApiCall (Either GmailError ())
+archiveMessages ids = batchModifyMessages $ BM.BatchModifyRequest ids [] ["INBOX"]
+
+batchModifyMessages :: BatchModifyRequest -> GmailApiCall (Either GmailError ())
+batchModifyMessages request = do
+  response <- responseToGmail <$> gmailHttpPost "/messages/batchModify" [] request
   return $ const () <$> response
 
 listHistory :: Text -> Maybe PageToken -> GmailApiCall (Either GmailError ListHistoryResponse)
@@ -239,9 +243,9 @@ gmailHttp requester = do
   httpResponse <- withFreshToken requester
   let body = httpResponse ^. Wreq.responseBody
       status = httpResponse ^. Wreq.responseStatus . Wreq.statusCode
-  case status of
-    200 -> return $ Right body
-    _ -> return $ Left (status, body)
+  return $ if status >= 200 && status < 300
+    then Right body
+    else Left (status, body)
 
 
 gmailHttpOptions :: GmailTokenInfo -> [(Text, Text)] -> Wreq.Options

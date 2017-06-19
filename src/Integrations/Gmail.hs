@@ -42,7 +42,7 @@ gmailRefresh :: B.ByteString -> IO [TaskCommand]
 gmailRefresh bytes = do
   let state = stateFromBytes bytes
   BLC.putStrLn $ "Starting gmail sync with " <> BLC.fromStrict bytes
-  updateExistingMessages state
+  --updateExistingMessages state
   continueFromLastSyncPoint state
   return []
 
