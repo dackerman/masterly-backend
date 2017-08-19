@@ -5,6 +5,7 @@
 
 module Integrations.Gmail.Http
   ( listMessages
+  , queryMessages
   , listHistory
   , loadMessage
   , loadMessageLabels
@@ -66,12 +67,13 @@ data GmailError = GmailError Int String | ParsingError String
 
 type GmailApiCall a = StateT GmailTokenInfo IO a
 
+type HistoryId = Text
 
 data History
-  = MessageAdded MR.MessageRef
-  | MessageDeleted MR.MessageRef
-  | LabelsAdded MR.MessageRef [Text]
-  | LabelsRemoved MR.MessageRef [Text]
+  = MessageAdded MR.MessageRef HistoryId
+  | MessageDeleted MR.MessageRef HistoryId
+  | LabelsAdded MR.MessageRef [Text] HistoryId
+  | LabelsRemoved MR.MessageRef [Text] HistoryId
 
 type ListHistoryResponse = ([History], Maybe PageToken)
 
@@ -108,10 +110,13 @@ formatParam Full = "full"
 formatParam Minimal = "minimal"
 
 listMessages :: Maybe PageToken -> GmailApiCall (Either GmailError ListMessagesResponse)
-listMessages maybeToken = do
+listMessages maybeToken = queryMessages maybeToken "is:unread in:inbox"
+
+queryMessages :: Maybe PageToken -> Text -> GmailApiCall (Either GmailError ListMessagesResponse)
+queryMessages maybeToken queryString = do
   response <- gmailHttpGet "/messages" params
   return $ jsonDecode (\m -> (LM._messages m, PageToken <$> LM._nextPageToken m)) response
-  where params = paramsFromPageToken maybeToken ++ [("q", "in:inbox is:unread")]
+  where params = paramsFromPageToken maybeToken ++ [("q", queryString)]
 
 archiveMessage :: Text -> GmailApiCall (Either GmailError ())
 archiveMessage ref = do
@@ -133,13 +138,13 @@ listHistory startHistoryId maybeToken = do
   response <- gmailHttpGet "/history" params
   return $ jsonDecode processResponse response
   where params = paramsFromPageToken maybeToken ++ [("startHistoryId", startHistoryId)]
-        processResponse json = ( mconcat $ extractFromHistoryItem <$> (fromMaybe [] $ LH._history json)
+        processResponse json = ( mconcat $ extractFromHistoryItem (LH._historyId json) <$> (fromMaybe [] $ LH._history json)
                                , PageToken <$> LH._nextPageToken json)
-        extractFromHistoryItem item
-          = (MessageAdded <$> (LH.refsAdded item))
-            <> (MessageDeleted <$> (LH.refsDeleted item))
-            <> (uncurry LabelsAdded <$> LH.labelsAdded item)
-            <> (uncurry LabelsRemoved <$> LH.labelsRemoved item)
+        extractFromHistoryItem historyId item
+          = (MessageAdded <$> (LH.refsAdded item) <*> pure historyId)
+            <> (MessageDeleted <$> (LH.refsDeleted item) <*> pure historyId)
+            <> (uncurry LabelsAdded <$> LH.labelsAdded item <*> pure historyId)
+            <> (uncurry LabelsRemoved <$> LH.labelsRemoved item <*> pure historyId)
 
 paramsFromPageToken :: Maybe PageToken -> [(Text, Text)]
 paramsFromPageToken Nothing = []

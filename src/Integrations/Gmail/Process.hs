@@ -6,6 +6,7 @@ module Integrations.Gmail.Process
   )
 where
 
+import           Control.Concurrent (myThreadId)
 import           Control.Concurrent.Chan (Chan, newChan, writeChan, readChan)
 import           Control.Monad (forM, forM_)
 import           Control.Monad.State (StateT(..), runStateT, execStateT, gets, modify)
@@ -17,6 +18,7 @@ import           Data.Maybe (catMaybes, fromMaybe)
 import           Data.Set (difference, union, fromList, toList)
 import           Data.Text (Text, unpack)
 import           Data.Time (getCurrentTime, formatTime, defaultTimeLocale)
+import           Foreign.StablePtr (newStablePtr)
 import           Integrations.Gmail.Core
 import           Integrations.Gmail.Http
 import qualified Integrations.Gmail.JSON.Message as M
@@ -33,25 +35,25 @@ continueFromLastSyncPoint :: GmailState -> IO ()
 continueFromLastSyncPoint state = case toTGmailState state of
   Nothing -> putStrLn "No API token for syncing!"
   Just oState -> do
+    myThreadId >>= newStablePtr
     historyChan <- newChan
-
-    (syncCommandsSink, syncCommandsSource) <- spawn $ bounded 1
-    (messageResponseSink, messageResponseSource) <- spawn $ unbounded
-
-    let syncCommandsProducer = fetchMessages >-> P.mapM (lift . dispatchSyncCommand) >-> toOutput syncCommandsSink
-        bulkDownloader = fromInput syncCommandsSource >-> P.mapM batchGet >-> P.concat >-> toOutput messageResponseSink
-        messagePersister = fromInput messageResponseSource >-> P.mapM_ (persistWithChan historyChan)
 
     -- Preflight gmail request to get new tokens if necessary
     tState <- execStateT preflightGmailTokens oState
 
-    forkIO $ execStateT (runEffect syncCommandsProducer) tState >> performGC
+    (syncCommandsSink, syncCommandsSource) <- spawn $ bounded 1
+    (messageResponseSink, messageResponseSource) <- spawn $ unbounded
 
-    -- Run 10 downloaders in parallel for better network utilization
-    --forM_ [1..10] (\_ -> do
-    forkIO $ execStateT (runEffect bulkDownloader) tState >> performGC
+    let syncCommandsProducer = fetchMessages >-> P.mapM (lift . dispatchSyncCommand historyChan) >-> toOutput syncCommandsSink
+        bulkDownloader = fromInput syncCommandsSource >-> P.mapM batchGet >-> P.concat >-> toOutput messageResponseSink
+        messagePersister = fromInput messageResponseSource >-> P.mapM_ (persistWithChan historyChan)
+        forkEffect eff = forkIO $ eff >> performGC
+        forkStateEffect eff = forkEffect (execStateT (runEffect eff) tState)
 
-    forkIO $ syncLastHistoryMessage historyChan >> performGC
+    forkStateEffect syncCommandsProducer
+    forkStateEffect bulkDownloader
+
+    forkEffect $ syncLastHistoryMessage historyChan
 
     runEffect messagePersister
     putStrLn "Gmail Processing is complete!"
@@ -66,17 +68,19 @@ updateExistingMessages = bailWithoutState updateExistingMessagesT
 
 updateExistingMessagesT :: TGmailState -> IO ()
 updateExistingMessagesT state = do
+  putStrLn "updating existing messages..."
   batches <- (chunked 100 . fmap syncMinimal . filter notInInbox) <$> loadMessagesFromStorage
   let queryForUpdates = preflightGmailTokens >> forM batches batchGet
   (results, creds) <- runStateT queryForUpdates state
   forM_ (concat results) persist
   storeIntegrationState $ toGmailState creds
+  putStrLn "done updating existing messages."
 
 preflightGmailTokens :: Process ()
 preflightGmailTokens = toGmailApiCall doPreflightRequest
 
 syncMinimal :: M.Message -> SyncCommand
-syncMinimal msg = DoSyncMessage $ SM (MR.MessageRef (M._id msg) (M._threadId msg)) Minimal
+syncMinimal msg = DoSyncMessage $ SM (MR.MessageRef (M._id msg) (M._threadId msg) ) Minimal (M._historyId msg)
 
 notInInbox :: M.Message -> Bool
 notInInbox = inBoth . M._labelIds
@@ -116,7 +120,6 @@ syncLastHistoryMessage historyChan = do
         Nothing -> do
           processChannel state
         Just newState -> do
-          putStrLn $ "updating history to " ++ unpack historyValue
           storeIntegrationState newState
           processChannel newState
 
@@ -132,9 +135,9 @@ mergeIfNewer state history = case (lastMessageID state) of
 
 type Process = StateT TGmailState IO
 
-data SyncMessage = SM MR.MessageRef Format
-data UpdateLabels = UL MR.MessageRef [Text] [Text]
-data DeleteMessage = DM MR.MessageRef
+data SyncMessage = SM MR.MessageRef Format Text
+data UpdateLabels = UL MR.MessageRef [Text] [Text] Text
+data DeleteMessage = DM MR.MessageRef Text
 
 data SyncCommand
   = DoSyncMessage SyncMessage
@@ -164,7 +167,7 @@ fullSync page = do
   case response of
     Left error -> log $ show error
     Right (messageRefs, nextPage) -> do
-      yield $ (\ref -> DoSyncMessage $ SM ref Full) <$> messageRefs
+      yield $ (\ref -> DoSyncMessage $ SM ref Full "") <$> messageRefs
       case nextPage of
         Nothing -> return ()
         _ -> fullSync nextPage
@@ -181,10 +184,10 @@ historySync history page = do
         Nothing -> return ()
         _ -> historySync history nextPage
 
-historyToSyncCommand (MessageAdded ref) = DoSyncMessage $ SM ref Full
-historyToSyncCommand (MessageDeleted ref) = DoDeleteMessage $ DM ref
-historyToSyncCommand (LabelsAdded ref labels) = DoUpdateLabels $ UL ref labels []
-historyToSyncCommand (LabelsRemoved ref labels) = DoUpdateLabels $ UL ref [] labels
+historyToSyncCommand (MessageAdded ref hId) = DoSyncMessage $ SM ref Full hId
+historyToSyncCommand (MessageDeleted ref hId) = DoDeleteMessage $ DM ref hId
+historyToSyncCommand (LabelsAdded ref labels hId) = DoUpdateLabels $ UL ref labels [] hId
+historyToSyncCommand (LabelsRemoved ref labels hId) = DoUpdateLabels $ UL ref [] labels hId
 
 batchGet :: [SyncCommand] -> Process [BatchGetResponse]
 batchGet [] = return []
@@ -193,7 +196,7 @@ batchGet commands = do
   liftIO $ putStrLn $ currentTimestamp ++ " batch GET of " ++ (show . length) commands ++ " records"
   toGmailApiCall (batchGetMessages (catMaybes $ toRef <$> commands))
   where
-    toRef (DoSyncMessage (SM ref format)) = Just $ BatchGetMessage ref format
+    toRef (DoSyncMessage (SM ref format _)) = Just $ BatchGetMessage ref format
     toRef _ = Nothing
 
 persist :: BatchGetResponse -> IO ()
@@ -212,35 +215,37 @@ persistWithChan historyChan mm@(MinimalMessage messageLabels) =
   writeChan historyChan (ML._historyId messageLabels) >> persist mm
 persistWithChan _ _ = return ()
 
-dispatchSyncCommand :: [SyncCommand] -> IO [SyncCommand]
-dispatchSyncCommand commands = catMaybes <$> mapM doDispatch commands
+dispatchSyncCommand :: Chan Text -> [SyncCommand] -> IO [SyncCommand]
+dispatchSyncCommand historyChan commands = catMaybes <$> mapM doDispatch commands
   where
-    doDispatch (DoSyncMessage (SM ref _)) = do
+    doDispatch (DoSyncMessage (SM ref _ hId)) = do
       --log $ "Syncing message " ++ show ref
       maybeExistingMessage <- liftIO $ loadMessageFromStorage ref
       case maybeExistingMessage of
-        Nothing -> return $ Just (DoSyncMessage (SM ref Full))
-        _ -> return $ Just (DoSyncMessage (SM ref Minimal))
+        Nothing -> return $ Just (DoSyncMessage (SM ref Full hId))
+        _ -> return $ Just (DoSyncMessage (SM ref Minimal hId))
 
-    doDispatch (DoUpdateLabels command@(UL ref _ _)) = do
+    doDispatch (DoUpdateLabels command@(UL ref _ _ hId)) = do
         log $ "Updating labels for " ++ show ref
         maybeExistingMessage <- liftIO $ loadMessageFromStorage ref
         case maybeExistingMessage of
           Just message -> do
             saveMessageToStorage (updateLabelsOnMessage command message)
+            writeChan historyChan hId
             return Nothing
           _ -> do
             log $ "Don't actually have the message, need to full sync " ++ show ref
-            return $ Just $ DoSyncMessage (SM ref Full)
+            return $ Just $ DoSyncMessage (SM ref Full hId)
 
-    doDispatch (DoDeleteMessage (DM ref)) = do
+    doDispatch (DoDeleteMessage (DM ref hId)) = do
         log $ "Deleting message " ++ show ref
         deleteMessage ref
+        writeChan historyChan hId
         return Nothing
 
 
 updateLabelsOnMessage :: UpdateLabels -> M.Message -> M.Message
-updateLabelsOnMessage (UL _ addedList removedList) original = original { M._labelIds = toList final }
+updateLabelsOnMessage (UL _ addedList removedList _) original = original { M._labelIds = toList final }
   where added = fromList addedList
         removed = fromList removedList
         current = fromList (M._labelIds original)

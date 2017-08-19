@@ -35,15 +35,20 @@ executable masterly-backend-exe
                      , pipes
                      , pipes-concurrency
                      , directory
-                     , attoparsec
+                     , parsec
                      , split
                      , time
                      , brick
                      , vector
+                     , vector-algorithms
+                     , primitive
                      , vty
                      , microlens
                      , text-zipper
                      , data-default
+                     , lucid
+                     , lens-family-core
+                     , stm
   default-language:    Haskell2010
   other-modules:     Integration
                      Integrations.Gmail
@@ -62,6 +67,9 @@ executable masterly-backend-exe
                      Integrations.Gmail.JSON.MessageLabels
                      Integrations.Gmail.MultipartBodyParser
                      Integrations.Gmail.Storage
+                     Model.EmailMessage
+                     Service.Gmail
+                     Web.Inbox
                      Webserver
                      Core
                      Commands

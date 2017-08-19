@@ -32,9 +32,9 @@ import           Integrations.Gmail.Storage (loadMessagesFromStorage)
 import           Prelude hiding (length, replicate)
 
 main :: IO ()
--- main = hSetBuffering stdout NoBuffering >> Webserver.main
+main = hSetBuffering stdout NoBuffering >> Webserver.main
 -- main = Cli.main
-main = hSetBuffering stdout NoBuffering >> simpleRepl
+-- main = hSetBuffering stdout NoBuffering >> simpleRepl
 
 data AppState = AS
   { appState :: ApplicationState

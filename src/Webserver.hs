@@ -5,37 +5,50 @@
 module Webserver where
 
 import           Control.Concurrent (forkIO, threadDelay)
+import           Control.Concurrent.MVar (MVar, newEmptyMVar, tryReadMVar, putMVar)
 import           Control.Monad (void, forM_)
+import           Data.Aeson (ToJSON)
 import qualified Data.ByteString as B
 import           Data.Map (Map, fromList, lookup)
 import           Data.Semigroup ((<>))
 import           Data.Text (Text, pack, unpack)
 import           Data.Text.Lazy (fromStrict)
+import qualified Data.Text.Lazy as LT
+import           Data.Vector (Vector)
 import qualified Options.Applicative as O
 import           Web.Scotty hiding (header)
 
 import           Integration
 import           Integrations.Gmail (gmailIntegration)
+import           Model.EmailMessage (Grouping, Message, EmailAddress)
+import           Service.Gmail (loadState, expectRight, runService, queryMessages)
+import           Web.Inbox (inboxEndpoint)
 
 import           Prelude hiding (lookup)
 
 data CLIOptions = Opts
-  { staticDir :: String }
+  { command :: Command }
 
-optsParser :: O.Parser CLIOptions
-optsParser = Opts
-  <$> O.strOption
-  ( O.long "static" <> O.help "Directory to serve static files")
+data Command = Sync | Serve
 
 programOpts = O.info
   (optsParser O.<**> O.helper)
   (O.fullDesc)
 
+optsParser :: O.Parser CLIOptions
+optsParser = Opts <$> O.subparser
+       ( O.command "sync"
+         (O.info (pure Sync) (O.progDesc "Sync integrations"))
+      <> O.command "serve"
+         (O.info (pure Serve) (O.progDesc "Serve web"))
+       )
+
 main :: IO ()
 main = do
-  -- opts <- execParser programOpts
-  -- syncIntegrations
-  app
+  opts <- O.execParser programOpts
+  case command opts of
+    Sync -> every (minutes 1) syncIntegrations
+    Serve -> app
 
 integrations :: Map Text Integration
 integrations = fromList $ (\i -> (integrationId i, i)) <$> ints
@@ -47,12 +60,43 @@ servingPort = 8080
 baseUrl :: Text
 baseUrl = "http://localhost:" <> pack (show servingPort)
 
+cache :: MVar a -> IO a -> IO a
+cache var action = do
+  putStrLn "doing cached action..."
+  cached <- tryReadMVar var
+  case cached of
+    Just c -> do
+      putStrLn "returning cached value!"
+      return c
+    Nothing -> do
+      putStrLn "running action..."
+      newValue <- action
+      putStrLn "action complete."
+      putMVar var newValue
+      putStrLn "cached value, returning."
+      return newValue
+
 app :: IO ()
-app = scotty servingPort $ do
-  post (capture "/api/integrations/:integration") handleIntegration
-  get (capture "/api/integrations/:integration") handleIntegration
-  get "/" $ do
-    text "hey there!"
+app = do
+  var <- newEmptyMVar
+  scotty servingPort $ do
+    post (capture "/api/integrations/:integration") handleIntegration
+    get (capture "/api/integrations/:integration") handleIntegration
+    get "/" $ do
+      addHeader "Access-Control-Allow-Origin" "*"
+      json =<< liftAndCatchIO (cache var runInbox)
+    post "/login" $ do
+      addHeader "Access-Control-Allow-Origin" "*"
+      googleTokenId <- param "googleTokenId"
+      text $ "cool bean: " <> googleTokenId
+
+runInbox :: IO (Vector (Grouping Message))
+runInbox = do
+  state <- loadState >>= expectRight
+  messagesResult <- runService state queryMessages
+  case messagesResult of
+    Left errorMsg -> error $ show errorMsg
+    Right messages -> inboxEndpoint messages
 
 handleIntegration :: ActionM ()
 handleIntegration = do
@@ -95,7 +139,7 @@ hours h = 60 * minutes h
 
 every :: Int -> IO a -> IO ()
 every timeUnit action = do
-  void $ forkIO $ do
+  void $ do
     action
     threadDelay timeUnit
     every timeUnit action
@@ -108,7 +152,7 @@ syncIntegration integration = do
   bytes <- loadIntegrationState name
   commands <- (refresh integration) bytes
   forM_ commands (executeTaskCommand integration)
-  putStrLn "done syncing Integrations"
+  putStrLn "done syncing Integrations\n\n"
 
 
 loadIntegrationState :: Text -> IO B.ByteString
